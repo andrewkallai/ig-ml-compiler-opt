@@ -275,7 +275,7 @@ class InputGenUtils:
             cmd = [
                 "clang++",
                 f.name,
-                "-linputgen.generate",
+                "-linputgen.generate-x86_64",
                 "-lpthread",
                 "-fuse-ld=lld",
                 "-O3",
@@ -321,7 +321,7 @@ class InputGenUtils:
         with tempfile.NamedTemporaryFile(dir=self.working_dir, suffix=".o", delete=False) as f:
             f.write(obj)
             f.flush()
-            cmd = ["clang++", f.name, "-linputgen.replay", "-lpthread", "-o", path] + self.mclang
+            cmd = ["clang++", f.name, "-linputgen.replay-x86_64", "-lpthread", "-o", path] + self.mclang
             exe, _ = self.get_output(
                 cmd,
                 None,
