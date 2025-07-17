@@ -100,23 +100,26 @@ def process_module(args, idx, data):
             compile_timeout=COMPILE_TIMEOUT,
         )
 
-        num_loops = data["num_loops"]
-        assert num_loops > 0
+        if args.dataset != "~/datasets/ComPileLoop.sqlite3":
+            data["module"] = data["content"]
 
         entries = []
-        for i in range(num_loops):
-            entries.append("__llvm_extracted_loop." + str(i))
-
         with InputGenGenerate(
             data["module"],
             entries=entries,
             **common_args,
         ) as igg:
-            assert igg.get_num_entries() == num_loops
             data["module"] = igg.get_repl_mod()
 
+            if args.dataset == "~/datasets/ComPileLoop.sqlite3":
+                num_loops = data["num_loops"]
+                assert num_loops > 0
+                for i in range(num_loops):
+                    entries.append("__llvm_extracted_loop." + str(i))
+                assert igg.get_num_entries() == num_loops
+
             inputs = []
-            for i in range(num_loops):
+            for i in range(igg.get_num_entries()):
                 entry_inputs = []
                 for int_min, int_max, num_inputs in INPUTGEN_STRATEGY:
                     # We do a separate igg.generate for each single input because we
