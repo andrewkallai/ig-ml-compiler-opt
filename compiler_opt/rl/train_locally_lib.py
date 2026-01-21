@@ -36,6 +36,8 @@ from compiler_opt.rl import policy_saver
 from compiler_opt.rl import random_net_distillation
 from compiler_opt.rl import registry
 from compiler_opt.rl import trainer
+from collections.abc import Callable, Iterable
+import signal
 
 
 @gin.configurable
@@ -98,8 +100,81 @@ def train_eval(root_dir: str,
       batch_size=batch_size,
       train_sequence_length=train_sequence_length)
 
+
+#   def sequence_example_iterator_fn(seq_ex: list[str]):
+#     return iter(dataset_fn(seq_ex).repeat().prefetch(tf.data.AUTOTUNE))
+
+
+  AUTOTUNE = tf.data.AUTOTUNE
+
+  def _make_sharded_iterator_from_seq_ex_list(
+    seq_ex: list[str],
+    dataset_fn: Callable[[list[str]], tf.data.Dataset],
+    *,
+    num_shards: int | None = None,
+    per_shard_shuffle_buffer: int | None = 10000,
+    repeat_forever: bool = True,
+    ) -> Iterable:
+    """
+    Build an iterator that uses outer parallelism:
+    - Splits seq_ex (a Python list of filenames) into `num_shards` shards
+    - Calls your existing dataset_fn(shard_files) to make one dataset per shard
+    - Mixes examples across shard datasets with sample_from_datasets
+    Returns a Python iterator over the resulting tf.data.Dataset.
+    """
+
+    if not seq_ex:
+        # safe guard - return an empty iterator
+        return iter(tf.data.Dataset.from_tensors(()).take(0))
+
+    # Heuristic for number of shards: min(number of files, CPU count * 2)
+    if num_shards is None:
+        cpu_count = os.cpu_count() or 4
+        num_shards = min(max(1, cpu_count * 2), len(seq_ex))
+
+    # If only one shard, fall back to your original simple pipeline
+    if num_shards <= 1:
+        ds = dataset_fn(seq_ex)
+        if repeat_forever:
+            ds = ds.repeat()
+        ds = ds.prefetch(AUTOTUNE)
+        return iter(ds)
+
+    # Create Python-level shards (round-robin split to balance sizes)
+    shards = [seq_ex[i::num_shards] for i in range(num_shards)]
+
+    shard_datasets = []
+    for shard_files in shards:
+        # dataset_fn expects a list[str] and returns a Dataset of examples
+        ds = dataset_fn(shard_files)
+
+        # Per-shard shuffling (keeps randomness without expensive global shuffle)
+        if per_shard_shuffle_buffer is not None and per_shard_shuffle_buffer > 0:
+            ds = ds.shuffle(per_shard_shuffle_buffer)
+
+        if repeat_forever:
+            ds = ds.repeat()
+
+        # allow parallelism inside the shard (dataset_fn likely uses map/interleave)
+        ds = ds.prefetch(AUTOTUNE)
+        shard_datasets.append(ds)
+
+    # Mix examples from the shard datasets. sample_from_datasets interleaves at example granularity.
+    combined = tf.data.Dataset.sample_from_datasets(shard_datasets)
+    combined = combined.prefetch(AUTOTUNE)
+    return iter(combined)
+
+
+    # Replace your old function with this:
   def sequence_example_iterator_fn(seq_ex: list[str]):
-    return iter(dataset_fn(seq_ex).repeat().prefetch(tf.data.AUTOTUNE))
+    # Tune num_shards below if you want to control it explicitly
+    return _make_sharded_iterator_from_seq_ex_list(
+            seq_ex,
+            dataset_fn,
+            num_shards=None,                 # use heuristic; change to int to force
+            per_shard_shuffle_buffer=10000,  # tune or set None to disable
+            repeat_forever=True)
+
 
   reward_stat_map = collections.defaultdict(lambda: None)
   reward_stat_map_path = os.path.join(root_dir, 'reward_stat_map')
@@ -141,6 +216,19 @@ def train_eval(root_dir: str,
         best_trajectory_repo=best_trajectory_repo)
 
     # Repeat for num_policy_iterations iterations.
+    # opts = tf.profiler.experimental.ProfilerOptions(
+    #     host_tracer_level=2,
+    #     python_tracer_level=0,  # set to 1/2 only if you really need python stacks
+    #     device_tracer_level=0,
+    # )
+    # def _shutdown(signum, frame):
+    #   tf.profiler.experimental.stop()  # writes plugins/profile/... output
+    #   quit()
+
+    # signal.signal(signal.SIGTERM, _shutdown)  # cancellation / time-limit
+    # signal.signal(signal.SIGINT,  _shutdown)
+    # tf.profiler.experimental.start(root_dir, options=opts)
+
     t1 = time.time()
     while (llvm_trainer.global_step_numpy()
            < num_policy_iterations * num_iterations):
@@ -169,6 +257,7 @@ def train_eval(root_dir: str,
 
       data_collector.on_dataset_consumed(dataset_iter)
 
+    # tf.profiler.experimental.stop()
     # Save final policy.
     saver.save(root_dir)
     # Wait for all the workers to finish.

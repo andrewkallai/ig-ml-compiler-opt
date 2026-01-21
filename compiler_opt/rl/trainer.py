@@ -14,7 +14,8 @@
 """LLVM Policy Trainer."""
 
 import time
-from collections.abc import Callable
+import random
+from collections.abc import Callable, Iterable
 
 from absl import logging
 
@@ -208,23 +209,135 @@ class Trainer:
   def global_step_numpy(self):
     return self._global_step.numpy()
 
+  # global AUTOTUNE
+  # AUTOTUNE = tf.data.AUTOTUNE
+
+  # def build_sharded_dataset(
+  #     file_pattern: str,
+  #     batch_size: int,
+  #     num_shards: int,
+  #     parse_fn: Callable[[tf.Tensor], dict] | None = None,
+  #     filenames_to_dataset: Callable[[Iterable[str]], tf.data.Dataset] | None = None,
+  #     is_training: bool = True,
+  #     per_file_cycle_length: int = 4,
+  #     shuffle_buffer_size: int | None = 10000,
+  # ) -> tf.data.Dataset:
+  #     """
+  #     Build a dataset that implements outer-parallelism by splitting filenames into
+  #     `num_shards` groups, building one dataset per shard, and sampling/interleaving
+  #     across shard-datasets.
+
+  #     - file_pattern: glob or pattern accepted by tf.io.gfile.glob (e.g. "/path/*.tfrecord").
+  #     - parse_fn: function to parse a single record (used if filenames_to_dataset is None).
+  #     - filenames_to_dataset: optional function that accepts an iterable of filenames
+  #       and returns a Dataset of examples (use this if you already have a custom loader).
+  #     - per_file_cycle_length: how many files to read in parallel inside each shard.
+  #     """
+  #     # Resolve filenames with gfile (works for local/GCS/etc.)
+  #     file_list = tf.io.gfile.glob(file_pattern)
+  #     if not file_list:
+  #         raise ValueError(f"No files match pattern: {file_pattern}")
+
+  #     # Optional shuffling of file order across shards (only do at Python level)
+  #     if is_training:
+  #         random.shuffle(file_list)
+
+  #     # Split list into Python-level shards
+  #     shards = [file_list[i::num_shards] for i in range(num_shards)]
+
+  #     shard_datasets = []
+  #     for shard_files in shards:
+  #         # Create a dataset of filenames for this shard
+  #         filenames_ds = tf.data.Dataset.from_tensor_slices(shard_files)
+
+  #         # If user provided a filenames_to_dataset helper, use it. Otherwise assume TFRecord + parse_fn.
+  #         if filenames_to_dataset is not None:
+  #             # filenames_to_dataset should accept a tf.data.Dataset or iterable of filenames
+  #             # If it expects a tf.data.Dataset we pass filenames_ds; otherwise pass shard_files list.
+  #             try:
+  #                 ds = filenames_to_dataset(filenames_ds)
+  #             except Exception:
+  #                 ds = filenames_to_dataset(shard_files)
+  #         else:
+  #             if parse_fn is None:
+  #                 raise ValueError("Either parse_fn or filenames_to_dataset must be provided")
+  #             # Read files in parallel inside the shard, parse records
+  #             def _read_and_parse(filename):
+  #                 return tf.data.TFRecordDataset(filename).map(
+  #                     parse_fn, num_parallel_calls=AUTOTUNE)
+
+  #             ds = filenames_ds.interleave(
+  #                 lambda f: tf.data.TFRecordDataset(f).map(parse_fn, num_parallel_calls=AUTOTUNE),
+  #                 cycle_length=per_file_cycle_length,
+  #                 num_parallel_calls=AUTOTUNE
+  #             )
+
+  #         # Per-shard shuffle (optional)
+  #         if is_training and shuffle_buffer_size is not None:
+  #             ds = ds.shuffle(shuffle_buffer_size)
+
+  #         ds = ds.batch(batch_size, drop_remainder=False)
+  #         ds = ds.prefetch(AUTOTUNE)
+  #         shard_datasets.append(ds)
+
+  #     # Combine shard datasets. sample_from_datasets mixes examples across shards.
+  #     combined = tf.data.Dataset.sample_from_datasets(shard_datasets)
+  #     combined = combined.prefetch(AUTOTUNE)
+  #     return combined
+
+  # def train(self,
+  #           dataset_iter,
+  #           monitor_dict,
+  #           num_iterations: int,
+  #           hooks: list[tuple[int, Callable[[], None]]] | None = None):
+  #   """Trains policy with data from dataset_iter for num_iterations steps."""
+  #   self._reset_metrics()
+  #   # context management is implemented in decorator
+  #   # pytype: disable=attribute-error
+  #   # pylint: disable=not-context-manager
+  #   with tf.summary.record_if(lambda: tf.math.equal(
+  #       self._global_step % self._summary_export_interval, 0)):
+  #     # pytype: enable=attribute-error
+  #     for iteration_index in range(num_iterations):
+  #       # When the data is not enough to fill in a batch, next(dataset_iter)
+  #       # will throw StopIteration exception, logging a warning message instead
+  #       # of killing the training when it happens.
+  #       try:
+  #         experience = next(dataset_iter)
+  #       except StopIteration:
+  #         logging.warning(
+  #             'Warning: skip training because do not have enough data to fill '
+  #             'in a batch, consider increase data or reduce batch size.')
+  #         break
+
+  #       # random network distillation for intrinsic reward generation
+  #       if self._random_network_distillation:
+  #         experience = self._random_network_distillation.train(experience)
+
+  #       loss = self._agent.train(experience)
+
+  #       self._percentage_correct.reset_state()
+
+  #       self._update_metrics(experience, monitor_dict)
+  #       self._log_experiment(loss.loss)
+  #       self._save_checkpoint()
+
+  #       if hooks is not None:
+  #         for hook_iterations, hook_fn in hooks:
+  #           if (iteration_index + 1) % hook_iterations == 0:
+  #             hook_fn()
+
   def train(self,
-            dataset_iter,
-            monitor_dict,
-            num_iterations: int,
-            hooks: list[tuple[int, Callable[[], None]]] | None = None):
+          dataset_iter,
+          monitor_dict,
+          num_iterations: int,
+          hooks: list[tuple[int, Callable[[], None]]] | None = None):
     """Trains policy with data from dataset_iter for num_iterations steps."""
     self._reset_metrics()
-    # context management is implemented in decorator
-    # pytype: disable=attribute-error
-    # pylint: disable=not-context-manager
+
     with tf.summary.record_if(lambda: tf.math.equal(
         self._global_step % self._summary_export_interval, 0)):
-      # pytype: enable=attribute-error
       for iteration_index in range(num_iterations):
-        # When the data is not enough to fill in a batch, next(dataset_iter)
-        # will throw StopIteration exception, logging a warning message instead
-        # of killing the training when it happens.
         try:
           experience = next(dataset_iter)
         except StopIteration:
@@ -233,14 +346,12 @@ class Trainer:
               'in a batch, consider increase data or reduce batch size.')
           break
 
-        # random network distillation for intrinsic reward generation
         if self._random_network_distillation:
           experience = self._random_network_distillation.train(experience)
 
         loss = self._agent.train(experience)
 
         self._percentage_correct.reset_state()
-
         self._update_metrics(experience, monitor_dict)
         self._log_experiment(loss.loss)
         self._save_checkpoint()
@@ -249,3 +360,4 @@ class Trainer:
           for hook_iterations, hook_fn in hooks:
             if (iteration_index + 1) % hook_iterations == 0:
               hook_fn()
+
