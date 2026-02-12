@@ -1,27 +1,27 @@
 # Detailed Timeline for PhD Prelim Exam
 
-You are starting on February 10, 2024. You have already completed Phase 1.
+Starting from February 10, 2024. Phase 1 was exploration.
 
 ## PHASE 2: TRAINING SPEED OPTIMIZATION (Feb 10 - Mar 31, 2024)
 
 ### WEEK 1: PROFILING AND BOTTLENECK IDENTIFICATION
 
-**Feb 10 (Tuesday) - Task Setup**
+**Feb 10-13 (Tuesday) - Task Setup**
 - [ ] Review existing baseline metrics from Phase 1
-- [ ] Identify specific training scripts to profile
-- [ ] Set up logging infrastructure
+- [ ] Identify specific function calls in the profile report
+- [ ] Set up logging methodology to measure the performance
 
-**Feb 13-14 (Tuesday-Wednesday) - Instrumentation**
+**Feb 14-20 (Tuesday-Wednesday) - Instrumentation**
 - [ ] Add profiling to training loop
 - [ ] Profile each major component:
   * Feature extraction
   * Data preparation
   * Model training steps
   * Evaluation
-- [ ] Profile memory usage
+- [ ] Profile memory usage additionally
 
-**Feb 15-16 (Thursday-Friday) - Analysis**
-- [ ] Create profiling report
+**Feb 21-27 (Thursday-Friday) - Analysis**
+- [ ] Create final profiling report
 - [ ] Identify top 3 bottlenecks
 - [ ] Formulate optimization hypotheses
 

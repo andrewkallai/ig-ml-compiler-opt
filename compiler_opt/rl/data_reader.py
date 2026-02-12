@@ -109,6 +109,7 @@ def create_flat_sequence_example_dataset_fn(
     # Data collector returns empty strings for corner cases, filter them out
     # here.
     # yapf: disable - Looks better hand formatted
+    sequence_examples = tf.constant(sequence_examples, dtype=tf.string)
     dataset = (tf.data.Dataset
                 .from_tensor_slices(sequence_examples)
                 .filter(lambda string: tf.strings.length(string) > 0)
@@ -139,7 +140,8 @@ def create_sequence_example_dataset_fn(
       a `tf.data.Dataset`.  Treating this dataset as an iterator yields batched
       `trajectory.Trajectory` instances with shape `[B, T, ...]`.
   """
-  trajectory_shuffle_buffer_size = 1024
+  #trajectory_shuffle_buffer_size = 1024
+  trajectory_shuffle_buffer_size = 2
 
   flat_sequence_example_dataset_fn = create_flat_sequence_example_dataset_fn(
       agent_cfg)
@@ -182,10 +184,12 @@ def create_file_dataset_fn(
       Iterating over this dataset yields `trajectory.Trajectory` instances with
       shape `[B, T, ...]`.
   """
-  files_buffer_size = 100
+  #files_buffer_size = 100
+  files_buffer_size = 2
   num_readers = 10
   num_map_threads = 8
-  shuffle_buffer_size = 1024
+  #shuffle_buffer_size = 1024
+  shuffle_buffer_size = 2
   trajectory_shuffle_buffer_size = 1024
 
   parser_fn = create_parser_fn(agent_cfg)
@@ -209,9 +213,11 @@ def create_file_dataset_fn(
     dataset = (
         dataset.unbatch().batch(
             train_sequence_length,
-            drop_remainder=True).shuffle(trajectory_shuffle_buffer_size).batch(
-                batch_size,
-                drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
+            drop_remainder=True))
+            # drop_remainder=True).shuffle(trajectory_shuffle_buffer_size).batch(
+            #     batch_size,
+            #     drop_remainder=True))
+                #drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
     return dataset
 
   return _file_dataset_fn

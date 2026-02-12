@@ -50,7 +50,8 @@ def main(_):
   logging.info(gin.config_str())
 
   train_locally_lib.train_eval(_ROOT_DIR.value, _DATA_PATH.value,
-                               _NUM_WORKERS.value)
+                               2)
+  #                             _NUM_WORKERS.value)
 
 
 if __name__ == '__main__':

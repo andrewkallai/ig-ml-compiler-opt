@@ -14,8 +14,7 @@
 """LLVM Policy Trainer."""
 
 import time
-import random
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 
 from absl import logging
 
@@ -210,19 +209,23 @@ class Trainer:
     return self._global_step.numpy()
 
   def train(self,
-          dataset_iter,
-          monitor_dict,
-          num_iterations: int,
-          hooks: list[tuple[int, Callable[[], None]]] | None = None):
+            dataset_iter,
+            monitor_dict,
+            num_iterations: int,
+            hooks: list[tuple[int, Callable[[], None]]] | None = None):
     """Trains policy with data from dataset_iter for num_iterations steps."""
     self._reset_metrics()
-
+    # context management is implemented in decorator
+    # pytype: disable=attribute-error
+    # pylint: disable=not-context-manager
     with tf.summary.record_if(lambda: tf.math.equal(
         self._global_step % self._summary_export_interval, 0)):
+      # pytype: enable=attribute-error
       for iteration_index in range(num_iterations):
+        # When the data is not enough to fill in a batch, next(dataset_iter)
+        # will throw StopIteration exception, logging a warning message instead
+        # of killing the training when it happens.
         try:
-          #experience = dataset_iter
-          #experience = dataset_iter.get_next()
           experience = next(dataset_iter)
         except StopIteration:
           logging.warning(
@@ -230,12 +233,14 @@ class Trainer:
               'in a batch, consider increase data or reduce batch size.')
           break
 
+        # random network distillation for intrinsic reward generation
         if self._random_network_distillation:
           experience = self._random_network_distillation.train(experience)
 
         loss = self._agent.train(experience)
 
         self._percentage_correct.reset_state()
+
         self._update_metrics(experience, monitor_dict)
         self._log_experiment(loss.loss)
         self._save_checkpoint()
@@ -244,4 +249,3 @@ class Trainer:
           for hook_iterations, hook_fn in hooks:
             if (iteration_index + 1) % hook_iterations == 0:
               hook_fn()
-
