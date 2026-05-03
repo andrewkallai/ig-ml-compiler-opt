@@ -137,14 +137,8 @@ class LogReaderTensorValue:
 
 @dataclasses.dataclass(frozen=True)
 class _Header:
-<<<<<<< HEAD
-  features: List[tf.TensorSpec]
-  score: Optional[tf.TensorSpec]
-  advice: Optional[tf.TensorSpec] = None
-=======
   features: list[tf.TensorSpec]
   score: tf.TensorSpec | None
->>>>>>> 4b3511540acfc111ffbc23c254d90786eb29c86d
 
 
 def _read_tensor(fs: BinaryIO, ts: tf.TensorSpec) -> LogReaderTensorValue:
