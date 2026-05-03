@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,73 +13,44 @@
 # limitations under the License.
 """Test for RegallocTraceWorker."""
 
-from typing import List
 import os
-import json
-import stat
-import textwrap
+from pathlib import Path
 
 from absl.testing import absltest
+import numpy as np
+import gin
 
 from compiler_opt.es.regalloc_trace import regalloc_trace_worker
-from compiler_opt.rl import corpus
-from compiler_opt.testing import model_test_utils
-from compiler_opt.rl import policy_saver
-
-
-def _setup_corpus(corpus_dir: str) -> List[corpus.ModuleSpec]:
-  modules = [
-      corpus.ModuleSpec("module_a", 1, ("-fmodule-a",), True),
-      corpus.ModuleSpec("module_b", 1, ("-fmodule-b",), True)
-  ]
-
-  corpus_description = {
-      "has_thinlto": True,
-      "modules": [os.path.join(corpus_dir, module.name) for module in modules]
-  }
-
-  with open(
-      os.path.join(corpus_dir, "corpus_description.json"),
-      "w",
-      encoding="utf-8") as corpus_description_handle:
-    json.dump(corpus_description, corpus_description_handle)
-
-  return modules
-
-
-def _create_test_binary(binary_path: str, output_path: str):
-  test_binary = textwrap.dedent(f"""\
-  #!/bin/bash
-  echo "$@" >> {output_path}
-  echo 1
-  echo 1
-  """)
-
-  with open(binary_path, "w", encoding="utf-8") as binary_handle:
-    binary_handle.write(test_binary)
-  binary_stat = os.stat(binary_path)
-  os.chmod(binary_path, binary_stat.st_mode | stat.S_IEXEC)
+from compiler_opt.testing import corpus_test_utils
 
 
 class RegallocTraceWorkerTest(absltest.TestCase):
 
+  def setUp(self):
+    gin.parse_config_file(
+        "compiler_opt/es/regalloc_trace/gin_configs/regalloc_trace.gin")
+
   def test_build_corpus_and_evaluate(self):
     corpus_dir = self.create_tempdir("corpus")
-    corpus_modules = _setup_corpus(corpus_dir)
+    corpus_modules = corpus_test_utils.setup_corpus(corpus_dir.full_path)
     fake_clang_binary = self.create_tempfile("fake_clang")
     fake_clang_invocations = self.create_tempfile("fake_clang_invocations")
-    _create_test_binary(fake_clang_binary.full_path,
-                        fake_clang_invocations.full_path)
+    corpus_test_utils.create_test_binary(fake_clang_binary.full_path,
+                                         fake_clang_invocations.full_path)
     fake_bb_trace_model_binary = self.create_tempfile(
         "fake_basic_block_trace_model")
     fake_bb_trace_model_invocations = self.create_tempfile(
         "fake_basic_block_trace_model_invocations")
-    _create_test_binary(fake_bb_trace_model_binary.full_path,
-                        fake_bb_trace_model_invocations.full_path)
+    corpus_test_utils.create_test_binary(
+        fake_bb_trace_model_binary.full_path,
+        fake_bb_trace_model_invocations.full_path, ["echo 1", "echo 1"])
 
     worker = regalloc_trace_worker.RegallocTraceWorker(
-        fake_clang_binary.full_path, fake_bb_trace_model_binary.full_path, 1,
-        corpus_dir.full_path)
+        gin_config="",
+        clang_path=fake_clang_binary.full_path,
+        basic_block_trace_model_path=fake_bb_trace_model_binary.full_path,
+        thread_count=1,
+        corpus_path=corpus_dir.full_path)
     total_cost = worker.compile_corpus_and_evaluate(corpus_modules,
                                                     "function_index_path.pb",
                                                     "bb_trace_path.pb", None)
@@ -112,31 +82,30 @@ class RegallocTraceWorkerTest(absltest.TestCase):
 
   def test_compile_corpus_and_evaluate_with_tflite(self):
     corpus_dir = self.create_tempdir("corpus")
-    corpus_modules = _setup_corpus(corpus_dir)
+    corpus_modules = corpus_test_utils.setup_corpus(corpus_dir.full_path)
     fake_clang_binary = self.create_tempfile("fake_clang")
     fake_clang_invocations = self.create_tempfile("fake_clang_invocations")
-    _create_test_binary(fake_clang_binary.full_path,
-                        fake_clang_invocations.full_path)
+    corpus_test_utils.create_test_binary(fake_clang_binary.full_path,
+                                         fake_clang_invocations.full_path)
     fake_bb_trace_model_binary = self.create_tempfile(
         "fake_basic_block_trace_model")
     fake_bb_trace_model_invocations = self.create_tempfile(
         "fake_basic_block_trace_model_invocations")
-    _create_test_binary(fake_bb_trace_model_binary.full_path,
-                        fake_bb_trace_model_invocations.full_path)
+    corpus_test_utils.create_test_binary(
+        fake_bb_trace_model_binary.full_path,
+        fake_bb_trace_model_invocations.full_path, ["echo 1", "echo 1"])
 
-    saved_model_dir = self.create_tempdir("saved_model")
-    tflite_dir = self.create_tempdir("converted_model")
-    model_test_utils.gen_test_model(saved_model_dir.full_path)
-    policy_saver.convert_mlgo_model(saved_model_dir.full_path,
-                                    tflite_dir.full_path)
-    serialized_policy = policy_saver.Policy.from_filesystem(
-        tflite_dir.full_path)
+    test_policy = np.ones(6777, dtype=np.float32)
 
     worker = regalloc_trace_worker.RegallocTraceWorker(
-        fake_clang_binary.full_path, fake_bb_trace_model_binary.full_path, 1,
-        corpus_dir.full_path)
+        gin_config="",
+        clang_path=fake_clang_binary.full_path,
+        basic_block_trace_model_path=fake_bb_trace_model_binary.full_path,
+        thread_count=1,
+        corpus_path=corpus_dir.full_path)
     worker.compile_corpus_and_evaluate(corpus_modules, "function_index_path.pb",
-                                       "bb_trace_path.pb", serialized_policy)
+                                       "bb_trace_path.pb",
+                                       test_policy.tobytes())
 
     # Assert that we pass the TFLite model to the clang invocations.
     clang_command_lines = fake_clang_invocations.read_text().split("\n")
@@ -148,3 +117,169 @@ class RegallocTraceWorkerTest(absltest.TestCase):
     self.assertTrue(
         "-regalloc-enable-advisor=development" in clang_command_lines[1])
     self.assertTrue("-regalloc-model=" in clang_command_lines[1])
+
+  def test_compile_corpus_suffix(self):
+    corpus_dir = self.create_tempdir("corpus")
+    corpus_modules = corpus_test_utils.setup_corpus(corpus_dir.full_path)
+    fake_clang_binary = self.create_tempfile("fake_clang")
+    fake_clang_invocations = self.create_tempfile("fake_clang_invocations")
+    corpus_test_utils.create_test_binary(fake_clang_binary.full_path,
+                                         fake_clang_invocations.full_path)
+
+    worker = regalloc_trace_worker.RegallocTraceWorker(
+        gin_config="",
+        clang_path=fake_clang_binary.full_path,
+        basic_block_trace_model_path="/dev/null",
+        thread_count=1,
+        corpus_path=corpus_dir.full_path)
+    output_dir = self.create_tempdir("output")
+    worker.build_corpus(corpus_modules, output_dir.full_path, None,
+                        ".fake_suffix")
+
+    clang_command_lines = fake_clang_invocations.read_text().split("\n")
+    clang_command_lines.remove("")
+    self.assertLen(clang_command_lines, 2)
+    self.assertTrue("module_a.o.fake_suffix" in clang_command_lines[0])
+    self.assertTrue("module_b.o.fake_suffix" in clang_command_lines[1])
+
+  def test_compiler_failure(self):
+    corpus_dir = self.create_tempdir("corpus")
+    corpus_modules = corpus_test_utils.setup_corpus(corpus_dir.full_path)
+    fake_clang_binary = self.create_tempfile("fake_clang")
+    fake_clang_invocations = self.create_tempfile("fake_clang_invocations")
+    corpus_test_utils.create_test_binary(
+        fake_clang_binary.full_path, fake_clang_invocations.full_path, [
+            "echo -n this is on stdout", "echo -n this is on stderr >&2",
+            "exit 1"
+        ])
+    worker = regalloc_trace_worker.RegallocTraceWorker(
+        gin_config="",
+        clang_path=fake_clang_binary.full_path,
+        basic_block_trace_model_path="/dev/null",
+        thread_count=1,
+        corpus_path=corpus_dir.full_path)
+    output_dir = self.create_tempdir("output")
+    with self.assertRaisesRegex(ValueError,
+                                "this is on stderr.*this is on stdout"):
+      worker.build_corpus(corpus_modules, output_dir.full_path, None)
+
+  def test_copy_corpus_locally(self):
+    corpus_copy_base_dir = self.create_tempdir("corpus_copy")
+    corpus_copy_dir = os.path.join(corpus_copy_base_dir.full_path,
+                                   "corpus_copy")
+    corpus_dir = self.create_tempdir("corpus")
+    _ = corpus_test_utils.setup_corpus(corpus_dir.full_path)
+    worker = regalloc_trace_worker.RegallocTraceWorker(
+        gin_config="",
+        clang_path="/fake/path/to/clamg",
+        basic_block_trace_model_path="/fake/path/to/basic_block_trace_model",
+        thread_count=1,
+        corpus_path=corpus_dir.full_path,
+        copy_corpus_locally_path=corpus_copy_dir)
+
+    self.assertTrue(
+        os.path.exists(os.path.join(corpus_copy_dir, "module_a.o.bc")))
+    self.assertTrue(
+        os.path.exists(os.path.join(corpus_copy_dir, "module_a.o.cmd")))
+    self.assertTrue(
+        os.path.exists(os.path.join(corpus_copy_dir, "module_b.o.bc")))
+    self.assertTrue(
+        os.path.exists(os.path.join(corpus_copy_dir, "module_b.o.cmd")))
+
+    # Check that the worker cleans up after itself upon deletion.
+    del worker
+    self.assertFalse(os.path.exists(corpus_copy_dir))
+
+  def test_copy_corpus_locally_thinlto(self):
+    corpus_copy_base_dir = self.create_tempdir("corpus_copy")
+    corpus_copy_dir = os.path.join(corpus_copy_base_dir.full_path,
+                                   "corpus_copy")
+    corpus_dir = self.create_tempdir("corpus")
+    _ = corpus_test_utils.setup_corpus(corpus_dir.full_path, True)
+    _ = regalloc_trace_worker.RegallocTraceWorker(
+        gin_config="",
+        clang_path="/fake/path/to/clamg",
+        basic_block_trace_model_path="/fake/path/to/basic_block_trace_model",
+        thread_count=1,
+        corpus_path=corpus_dir.full_path,
+        copy_corpus_locally_path=corpus_copy_dir)
+
+    self.assertTrue(
+        os.path.exists(os.path.join(corpus_copy_dir, "module_a.o.thinlto.bc")))
+    self.assertTrue(
+        os.path.exists(os.path.join(corpus_copy_dir, "module_b.o.thinlto.bc")))
+
+  def test_remote_corpus_replacement_flags(self):
+    corpus_copy_base_dir = self.create_tempdir("corpus_copy")
+    corpus_copy_dir = os.path.join(corpus_copy_base_dir.full_path,
+                                   "corpus_copy")
+    corpus_dir = self.create_tempdir("corpus")
+    profile_path = os.path.join(corpus_dir, "profile.prof")
+    Path(profile_path).touch()
+    corpus_modules = corpus_test_utils.setup_corpus(
+        corpus_dir.full_path, False, ("-fprofile-instr-use={prof}",))
+
+    fake_clang_binary = self.create_tempfile("fake_clang")
+    fake_clang_invocations = self.create_tempfile("fake_clang_invocations")
+    corpus_test_utils.create_test_binary(fake_clang_binary.full_path,
+                                         fake_clang_invocations.full_path)
+    fake_bb_trace_model_binary = self.create_tempfile(
+        "fake_basic_block_trace_model")
+    fake_bb_trace_model_invocations = self.create_tempfile(
+        "fake_basic_block_trace_model_invocations")
+    corpus_test_utils.create_test_binary(
+        fake_bb_trace_model_binary.full_path,
+        fake_bb_trace_model_invocations.full_path, ["echo 1", "echo 1"])
+
+    worker = regalloc_trace_worker.RegallocTraceWorker(
+        gin_config="",
+        clang_path=fake_clang_binary.full_path,
+        basic_block_trace_model_path=fake_bb_trace_model_binary.full_path,
+        thread_count=1,
+        corpus_path=corpus_dir.full_path,
+        copy_corpus_locally_path=corpus_copy_dir,
+        aux_file_replacement_flags={"prof": profile_path})
+
+    copied_profile_path = os.path.join(corpus_copy_dir, "profile.prof")
+    self.assertTrue(os.path.exists(copied_profile_path))
+    _ = worker.compile_corpus_and_evaluate(corpus_modules,
+                                           "function_index_path.pb",
+                                           "bb_trace_path.pb", None)
+    clang_command_lines = fake_clang_invocations.read_text().split("\n")
+    clang_command_lines.remove("")
+    self.assertLen(clang_command_lines, 2)
+    self.assertTrue(
+        f"-fprofile-instr-use={copied_profile_path}" in clang_command_lines[0])
+    self.assertTrue(
+        f"-fprofile-instr-use={copied_profile_path}" in clang_command_lines[1])
+
+  def test_extra_bb_trace_flags(self):
+    corpus_dir = self.create_tempdir("corpus")
+    corpus_modules = corpus_test_utils.setup_corpus(corpus_dir.full_path)
+    fake_clang_binary = self.create_tempfile("fake_clang")
+    fake_clang_invocations = self.create_tempfile("fake_clang_invocations")
+    corpus_test_utils.create_test_binary(fake_clang_binary.full_path,
+                                         fake_clang_invocations.full_path)
+    fake_bb_trace_model_binary = self.create_tempfile(
+        "fake_basic_block_trace_model")
+    fake_bb_trace_model_invocations = self.create_tempfile(
+        "fake_basic_block_trace_model_invocations")
+    corpus_test_utils.create_test_binary(
+        fake_bb_trace_model_binary.full_path,
+        fake_bb_trace_model_invocations.full_path, ["echo 1", "echo 1"])
+
+    worker = regalloc_trace_worker.RegallocTraceWorker(
+        gin_config="",
+        clang_path=fake_clang_binary.full_path,
+        basic_block_trace_model_path=fake_bb_trace_model_binary.full_path,
+        thread_count=1,
+        corpus_path=corpus_dir.full_path,
+        extra_bb_trace_model_flags=["--extra_flag"])
+    _ = worker.compile_corpus_and_evaluate(corpus_modules,
+                                           "function_index_path.pb",
+                                           "bb_trace_path.pb", None)
+
+    command_line = fake_bb_trace_model_invocations.read_text().split(
+        "\n")[0].split()
+
+    self.assertTrue("--extra_flag" in command_line)

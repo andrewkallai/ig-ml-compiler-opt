@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +17,6 @@ import tempfile
 import collections
 import os
 import time
-from typing import List, Optional
 
 from absl import logging
 
@@ -29,6 +27,7 @@ from tf_agents.train import learner
 from tf_agents.train.utils import train_utils
 from tf_agents.utils import common
 
+from compiler_opt.distributed import worker_manager
 from compiler_opt.rl import data_reader
 from compiler_opt.rl import local_data_collector
 from compiler_opt.rl import gin_external_configurables  # pylint: disable=unused-import
@@ -40,8 +39,8 @@ from compiler_opt.rl import data_collector
 
 
 def evaluate(root_dir: str, corpus_path: str,
-             variable_container_server_address: str, num_workers: Optional[int],
-             worker_manager_class):
+             variable_container_server_address: str, num_workers: int | None,
+             worker_manager_class: type[worker_manager.WorkerManager]):
   """Evaluate a given policy on the given corpus.
 
   Args:
@@ -87,7 +86,7 @@ def evaluate(root_dir: str, corpus_path: str,
   dataset_fn = data_reader.create_flat_sequence_example_dataset_fn(
       agent_cfg=agent_cfg)
 
-  def sequence_example_iterator_fn(seq_ex: List[str]):
+  def sequence_example_iterator_fn(seq_ex: list[str]):
     return iter(dataset_fn(seq_ex).prefetch(tf.data.AUTOTUNE))
 
   cps = corpus.Corpus(
@@ -107,7 +106,7 @@ def evaluate(root_dir: str, corpus_path: str,
   with worker_manager_class(
       worker_class=problem_config.get_runner_type(),
       count=num_workers,
-      moving_average_decay_rate=1) as worker_pool:
+      worker_kwargs=dict(moving_average_decay_rate=1)) as worker_pool:
     logging.info('constructed pool')
     collector = local_data_collector.LocalDataCollector(
         cps=cps,
@@ -122,7 +121,7 @@ def evaluate(root_dir: str, corpus_path: str,
     actions = []
     while True:
       with tempfile.TemporaryDirectory() as tmpdirname:
-        saver = policy_saver.PolicySaver(policy_dict=policy_dict)
+        saver = policy_saver.MLGOPolicySaver(policy_dict=policy_dict)
         saver.save(tmpdirname)
         policy_bytes = policy_saver.Policy.from_filesystem(
             os.path.join(tmpdirname, 'policy'))
@@ -177,7 +176,7 @@ def evaluate(root_dir: str, corpus_path: str,
 
 def run_evaluate(root_dir: str, corpus_path: str,
                  variable_container_server_address: str,
-                 num_workers: Optional[int], worker_manager_class):
+                 num_workers: int | None, worker_manager_class):
   """Wait for the collect policy to be ready and run collect job."""
   # Wait for the collect policy to become available, then load it.
   policy_dir = os.path.join(root_dir, learner.POLICY_SAVED_MODEL_DIR,

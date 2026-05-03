@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +13,7 @@
 # limitations under the License.
 """util function to create training datasets."""
 
-from typing import Callable, List
+from collections.abc import Callable
 
 import tensorflow as tf
 from tf_agents.trajectories import trajectory
@@ -88,7 +87,7 @@ def create_parser_fn(
 
 def create_flat_sequence_example_dataset_fn(
     agent_cfg: agent_config.AgentConfig
-) -> Callable[[List[str]], tf.data.Dataset]:
+) -> Callable[[list[str]], tf.data.Dataset]:
   """Get a function that creates a dataset from serialized sequence examples.
 
   The dataset is "flat" insofar as it does not batch for sequence length nor
@@ -125,7 +124,7 @@ def create_flat_sequence_example_dataset_fn(
 
 def create_sequence_example_dataset_fn(
     agent_cfg: agent_config.AgentConfig, batch_size: int,
-    train_sequence_length: int) -> Callable[[List[str]], tf.data.Dataset]:
+    train_sequence_length: int) -> Callable[[list[str]], tf.data.Dataset]:
   """Get a function that creates a dataset from serialized sequence examples.
 
   Args:
@@ -164,7 +163,8 @@ def create_file_dataset_fn(
     agent_cfg: agent_config.AgentConfig,
     batch_size: int,
     train_sequence_length: int,
-    input_dataset) -> Callable[[List[str]], tf.data.Dataset]:
+    input_dataset,
+    shuffle_repeat_count: int | None) -> Callable[[list[str]], tf.data.Dataset]:
   """Get a function that creates an dataset from files.
 
   Args:
@@ -174,6 +174,8 @@ def create_file_dataset_fn(
     batch_size: int, batch_size B.
     train_sequence_length: int, trajectory sequence length T.
     input_dataset: A tf.data.Dataset subclass object.
+    shuffle_repeat_count: The number of times to repeat a shuffled version of
+      the dataset, or None to repeat indefinitely.
 
   Returns:
     A callable that takes file path(s) and returns a `tf.data.Dataset`.
@@ -194,9 +196,11 @@ def create_file_dataset_fn(
             files_buffer_size).interleave(
                 input_dataset, cycle_length=num_readers, block_length=1)
         # Due to a bug in collection, we sometimes get empty rows.
-        .filter(lambda string: tf.strings.length(string) > 0).apply(
-            tf.data.experimental.shuffle_and_repeat(shuffle_buffer_size)).map(
-                parser_fn, num_parallel_calls=num_map_threads)
+        .filter(lambda string: tf.strings.length(string) > 0)
+        .apply(tf.data.experimental.shuffle_and_repeat(
+                 shuffle_buffer_size,
+                 count=shuffle_repeat_count))
+        .map(parser_fn, num_parallel_calls=num_map_threads)
         # Only keep sequences of length 2 or more.
         .filter(lambda traj: tf.size(traj.reward) > 2))
 
@@ -215,7 +219,9 @@ def create_file_dataset_fn(
 
 def create_tfrecord_dataset_fn(
     agent_cfg: agent_config.AgentConfig, batch_size: int,
-    train_sequence_length: int) -> Callable[[List[str]], tf.data.Dataset]:
+    train_sequence_length: int,
+    shuffle_repeat_count: int | None = None
+) -> Callable[[list[str]], tf.data.Dataset]:
   """Get a function that creates an dataset from tfrecord.
 
   Args:
@@ -224,6 +230,8 @@ def create_tfrecord_dataset_fn(
     action_spec: action spec of the optimization problem.
     batch_size: int, batch_size B.
     train_sequence_length: int, trajectory sequence length T.
+    shuffle_repeat_count: The number of times to repeat a shuffled version of
+      the dataset, or None to repeat indefinitely.
 
   Returns:
     A callable that takes tfrecord path(s) and returns a `tf.data.Dataset`.
@@ -234,4 +242,5 @@ def create_tfrecord_dataset_fn(
       agent_cfg,
       batch_size,
       train_sequence_length,
-      input_dataset=tf.data.TFRecordDataset)
+      input_dataset=tf.data.TFRecordDataset,
+      shuffle_repeat_count=shuffle_repeat_count)

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,21 +26,20 @@ from compiler_opt.rl import gin_external_configurables  # pylint: disable=unused
 from compiler_opt.rl import policy_saver
 from compiler_opt.rl import registry
 
-flags.DEFINE_string('root_dir', os.getenv('TEST_UNDECLARED_OUTPUTS_DIR'),
-                    'Root directory for writing saved models.')
-flags.DEFINE_multi_string('gin_files', [],
-                          'List of paths to gin configuration files.')
-flags.DEFINE_multi_string(
+_ROOT_DIR = flags.DEFINE_string('root_dir',
+                                os.getenv('TEST_UNDECLARED_OUTPUTS_DIR'),
+                                'Root directory for writing saved models.')
+_GIN_FILES = flags.DEFINE_multi_string(
+    'gin_files', [], 'List of paths to gin configuration files.')
+_GIN_BINDINGS = flags.DEFINE_multi_string(
     'gin_bindings', [],
     'Gin bindings to override the values set in the config files.')
-
-FLAGS = flags.FLAGS
 
 
 @gin.configurable
 def generate_test_model(agent_config_type=agent_config.PPOAgentConfig):
   """Generate test model."""
-  root_dir = FLAGS.root_dir
+  root_dir = _ROOT_DIR.value
 
   problem_config = registry.get_configuration()
   time_step_spec, action_spec = problem_config.get_signature_spec()
@@ -56,7 +54,7 @@ def generate_test_model(agent_config_type=agent_config.PPOAgentConfig):
       'saved_policy': tf_agent.policy,
       'saved_collect_policy': tf_agent.collect_policy,
   }
-  saver = policy_saver.PolicySaver(policy_dict=policy_dict)
+  saver = policy_saver.MLGOPolicySaver(policy_dict=policy_dict)
 
   # Save policy.
   saver.save(root_dir)
@@ -64,7 +62,7 @@ def generate_test_model(agent_config_type=agent_config.PPOAgentConfig):
 
 def main(_):
   gin.parse_config_files_and_bindings(
-      FLAGS.gin_files, bindings=FLAGS.gin_bindings, skip_unknown=True)
+      _GIN_FILES.value, bindings=_GIN_BINDINGS.value, skip_unknown=True)
   logging.info(gin.config_str())
 
   generate_test_model()

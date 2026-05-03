@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,13 +13,14 @@
 # limitations under the License.
 """Test facilities for Blackbox classes."""
 
-from typing import List, Collection, Optional
+from collections.abc import Collection
 
 import gin
 
 from compiler_opt.distributed import worker
 from compiler_opt.rl import corpus
 from compiler_opt.rl import policy_saver
+from compiler_opt.rl import constant
 
 
 @gin.configurable
@@ -29,18 +29,31 @@ class ESWorker(worker.Worker):
   Each time a worker is called, the function value
   it will return increases."""
 
-  def __init__(self, arg, *, kwarg):
-    self._arg = arg
-    self._kwarg = kwarg
-    self.function_value = 0.0
+  def __init__(self, *, delta=1.0, initial_value=0.0):
+    self.function_value = initial_value
+    self._delta = delta
 
   def compile(self, policy: policy_saver.Policy,
-              samples: List[corpus.ModuleSpec]) -> float:
-    if policy and samples:
-      self.function_value += 1.0
-      return self.function_value
+              modules: list[corpus.LoadedModuleSpec]) -> float:
+    # We return the values with constant.DELTA subtracted so that we get
+    # exact values we can assert against when writing tests that only see
+    # the relative reward.
+    if policy and modules:
+      self.function_value += self._delta
+      return self.function_value - constant.DELTA
     else:
-      return 0.0
+      return 100 - constant.DELTA
+
+
+class SizeReturningESWorker(worker.Worker):
+  """A mock worker that returns the size of the first module."""
+
+  def compile(self, policy: bytes | None,
+              modules: list[corpus.LoadedModuleSpec]) -> int:
+    del policy  # Unused.
+    if not modules:
+      return 0
+    return len(modules[0].loaded_ir)
 
 
 class ESTraceWorker(worker.Worker):
@@ -50,16 +63,13 @@ class ESTraceWorker(worker.Worker):
   different interface than other workers.
   """
 
-  def __init__(self, arg, *, kwarg):
-    del arg  # Unused.
-    del kwarg  # Unused.
+  def __init__(self):
     self._function_value = 0.0
 
-  def compile_corpus_and_evaluate(
-      self, modules: Collection[corpus.ModuleSpec], function_index_path: str,
-      bb_trace_path: str,
-      tflite_policy: Optional[policy_saver.Policy]) -> float:
-    if modules and function_index_path and bb_trace_path and tflite_policy:
+  def compile_corpus_and_evaluate(self, modules: Collection[corpus.ModuleSpec],
+                                  function_index_path: str, bb_trace_path: str,
+                                  policy_as_bytes: bytes | None) -> float:
+    if modules and function_index_path and bb_trace_path and policy_as_bytes:
       self._function_value += 1
       return self._function_value
     else:

@@ -115,7 +115,7 @@ See also [the build bot script](../../buildbot/buildbot_init.sh)
 cd ~/ml-compiler-opt
 sudo apt-get install python3-pip
 pip3 install pipenv
-pipenv sync --system
+./versioned_pipenv sync --system
 
 TF_PIP=$(python3 -m pip show tensorflow | grep Location | cut -d ' ' -f 2)
 
@@ -310,6 +310,12 @@ rm -rf $OUTPUT_DIR && \
   --gin_files=compiler_opt/rl/inlining/gin_configs/ppo_nn_agent.gin \
   --gin_bindings=train_eval.warmstart_policy_dir=\"$WARMSTART_OUTPUT_DIR/saved_policy\"
 ```
+
+You can resume training from a previously saved checkpoint by specifying
+the directory path containing `ckpt-*.index` files as the `root_dir`.
+Typically, this would be the `$OUTPUT_DIR`. So, if `$OUTPUT_DIR` has
+previously saved checkpoints, running the above command would restore the 
+latest checkpoint and resume training.
 
 You may also start a tensorboard to monitor the training process with 
 

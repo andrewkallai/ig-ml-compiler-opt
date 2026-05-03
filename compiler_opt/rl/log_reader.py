@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -62,7 +61,8 @@ import json
 import math
 
 from compiler_opt import type_map
-from typing import Any, BinaryIO, Dict, Generator, List, Optional
+from typing import Any, BinaryIO
+from collections.abc import Generator
 import numpy as np
 import tensorflow as tf
 
@@ -75,9 +75,9 @@ _dtype_to_ctype = {
 }
 
 
-def create_tensorspec(d: Dict[str, Any]) -> tf.TensorSpec:
+def create_tensorspec(d: dict[str, Any]) -> tf.TensorSpec:
   name: str = d['name']
-  shape: List[int] = [int(e) for e in d['shape']]
+  shape: list[int] = [int(e) for e in d['shape']]
   element_type_str: str = d['type']
   if element_type_str not in _element_type_name_to_dtype:
     raise ValueError(f'uknown type: {element_type_str}')
@@ -137,18 +137,27 @@ class LogReaderTensorValue:
 
 @dataclasses.dataclass(frozen=True)
 class _Header:
+<<<<<<< HEAD
   features: List[tf.TensorSpec]
   score: Optional[tf.TensorSpec]
   advice: Optional[tf.TensorSpec] = None
+=======
+  features: list[tf.TensorSpec]
+  score: tf.TensorSpec | None
+>>>>>>> 4b3511540acfc111ffbc23c254d90786eb29c86d
 
 
 def _read_tensor(fs: BinaryIO, ts: tf.TensorSpec) -> LogReaderTensorValue:
   size = math.prod(ts.shape) * ctypes.sizeof(_dtype_to_ctype[ts.dtype])
   data = fs.read(size)
+  if len(data) != size:
+    raise OSError(
+        f'Expected to read a total of {size} bytes for tensors, got {len(data)}'
+    )
   return LogReaderTensorValue(ts, data)
 
 
-def _read_header(f: BinaryIO) -> Optional[_Header]:
+def _read_header(f: BinaryIO) -> _Header | None:
   header_raw = f.readline()
   if not header_raw:
     # This is the path taken by empty files
@@ -164,8 +173,8 @@ def _read_header(f: BinaryIO) -> Optional[_Header]:
 class ObservationRecord:
   context: str
   observation_id: int
-  feature_values: List[LogReaderTensorValue]
-  score: Optional[LogReaderTensorValue]
+  feature_values: list[LogReaderTensorValue]
+  score: LogReaderTensorValue | None
 
 def read_one_observation(
     context: Optional[str],
@@ -200,6 +209,12 @@ def _enumerate_log_from_stream(
   tensor_specs = header.features
   score_spec = header.score
   context = None
+
+  def expect_newline():
+    expected = f.readline().decode('utf-8')
+    if '\n' != expected:
+      raise OSError(f'Expected newline in log stream, got {expected}')
+
   while event_str := f.readline():
     event = json.loads(event_str)
     if 'context' in event:
@@ -207,13 +222,15 @@ def _enumerate_log_from_stream(
       continue
     observation_id = int(event['observation'])
     features = [_read_tensor(f, ts) for ts in tensor_specs]
-    f.readline()
+    expect_newline()
     score = None
     if score_spec is not None:
       score_header = json.loads(f.readline())
-      assert int(score_header['outcome']) == observation_id
+      if int(score_header['outcome']) != observation_id:
+        raise OSError(f'Expected observation ID {observation_id} \
+                        got {score_header["outcome"]}')
       score = _read_tensor(f, score_spec)
-      f.readline()
+      expect_newline()
     yield ObservationRecord(
         context=context,
         observation_id=observation_id,
@@ -249,8 +266,8 @@ def _add_feature(se: tf.train.SequenceExample, spec: tf.TensorSpec,
 
 
 def read_log_as_sequence_examples(
-    fname: str) -> Dict[str, tf.train.SequenceExample]:
-  ret: Dict[str, tf.train.SequenceExample] = collections.defaultdict(
+    fname: str) -> dict[str, tf.train.SequenceExample]:
+  ret: dict[str, tf.train.SequenceExample] = collections.defaultdict(
       tf.train.SequenceExample)
   # a record is an observation: the features and score for one step.
   # the records are in time order

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,13 +15,18 @@
 
 import os
 from absl.testing import absltest
+import cloudpickle
 import gin
-import tempfile
 import numpy as np
 import numpy.typing as npt
+import pathlib
 import tensorflow as tf
 from tf_agents.networks import actor_distribution_network
 from tf_agents.policies import actor_policy
+
+# Pytype cannot pick up the pyi file for tensorflow.summary. Disable the error
+# here as these errors are false positives.
+# pytype: disable=pyi-error
 
 from compiler_opt.distributed.local import local_worker_manager
 from compiler_opt.es import blackbox_learner
@@ -46,9 +50,9 @@ class BlackboxLearnerTests(absltest.TestCase):
   def setUp(self):
     super().setUp()
 
-    gin.bind_parameter('SamplingBlackboxEvaluator.total_num_perturbations', 5)
+    gin.bind_parameter('SamplingBlackboxEvaluator.total_num_perturbations', 3)
     gin.bind_parameter('SamplingBlackboxEvaluator.num_ir_repeats_within_worker',
-                       5)
+                       1)
 
     self._learner_config = blackbox_learner.BlackboxLearnerConfig(
         total_steps=1,
@@ -61,15 +65,18 @@ class BlackboxLearnerTests(absltest.TestCase):
         evaluator=blackbox_evaluator.SamplingBlackboxEvaluator,
         total_num_perturbations=3,
         precision_parameter=1,
-        step_size=1.0)
+        step_size=1.0,
+        save_best_policy=True)
 
     self._cps = corpus.create_corpus_for_testing(
-        location=tempfile.gettempdir(),
-        elements=[corpus.ModuleSpec(name='smth', size=1)],
+        location=self.create_tempdir().full_path,
+        elements=[
+            corpus.ModuleSpec(name='smth', size=1, command_line=('-cc1',))
+        ],
         additional_flags=(),
         delete_flags=())
 
-    output_dir = tempfile.gettempdir()
+    output_dir = self.create_tempdir()
     policy_name = 'policy_name'
 
     # create a policy
@@ -104,28 +111,38 @@ class BlackboxLearnerTests(absltest.TestCase):
     init_params = policy_utils.get_vectorized_parameters_from_policy(policy)
 
     # save the policy
-    saver = policy_saver.PolicySaver({policy_name: policy})
-    policy_save_path = os.path.join(output_dir, 'temp_output', 'policy')
+    saver = policy_saver.MLGOPolicySaver({policy_name: policy})
+    policy_save_path = os.path.join(output_dir.full_path, 'temp_output',
+                                    'policy')
     saver.save(policy_save_path)
+
+    self._iteration_policies_path = os.path.join(output_dir.full_path,
+                                                 'policies')
+    # The directory should be unique per test and thus should not exist
+    # before we create it. Raise an error otherwise.
+    if os.path.exists(self._iteration_policies_path):
+      raise ValueError('Test directory already exists.')
+    os.mkdir(self._iteration_policies_path)
 
     def _policy_saver_fn(parameters: npt.NDArray[np.float32],
                          policy_name: str) -> None:
       if parameters is not None and policy_name:
+        pathlib.Path(os.path.join(self._iteration_policies_path,
+                                  policy_name)).touch()
         return None
       return None
 
     self._learner = blackbox_learner.BlackboxLearner(
         blackbox_opt=blackbox_optimizers.MonteCarloBlackboxOptimizer(
             precision_parameter=1.0,
-            estimator_type=blackbox_optimizers.EstimatorType.ANTITHETIC,
+            estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
             normalize_fvalues=True,
             hyperparameters_update_method=blackbox_optimizers.UpdateMethod
             .NO_METHOD,
             extra_params=None,
             step_size=1),
         train_corpus=self._cps,
-        tf_policy_path=os.path.join(policy_save_path, policy_name),
-        output_dir=output_dir,
+        output_dir=output_dir.full_path,
         policy_saver_fn=_policy_saver_fn,
         model_weights=init_params,
         config=self._learner_config,
@@ -147,7 +164,12 @@ class BlackboxLearnerTests(absltest.TestCase):
 
   def test_run_step(self):
     with local_worker_manager.LocalWorkerPoolManager(
-        blackbox_test_utils.ESWorker, count=3, arg='', kwarg='') as pool:
+        blackbox_test_utils.ESWorker,
+        count=3,
+        pickle_func=cloudpickle.dumps,
+        worker_args=(),
+        worker_kwargs={}) as pool:
+      self._learner.set_baseline(pool)
       self._learner.run_step(pool)  # pylint: disable=protected-access
       # expected length calculated from expected shapes of variables
       self.assertEqual(len(self._learner.get_model_weights()), 17154)
@@ -155,3 +177,55 @@ class BlackboxLearnerTests(absltest.TestCase):
       # this will indicate general validity of all the values
       for value in self._learner.get_model_weights()[:5]:
         self.assertNotAlmostEqual(value, 0.0)
+
+      # Normally the models would be saved asynchronously while
+      # blackbox_learner waits for compilation results. Flush them explicitly
+      # here so we can see the model.
+      self._learner.flush_models()
+      self.assertIn('iteration0', os.listdir(self._iteration_policies_path))
+
+  def test_save_best_model(self):
+    with local_worker_manager.LocalWorkerPoolManager(
+        blackbox_test_utils.ESWorker,
+        count=1,
+        pickle_func=cloudpickle.dumps,
+        worker_args=(),
+        worker_kwargs={
+            'delta': -1.0,
+            'initial_value': 5
+        }) as pool:
+      self._learner.set_baseline(pool)
+      self._learner.run_step(pool)
+      self._learner.run_step(pool)
+      # Check the policy from step zero since it will be flushed in step one.
+      self.assertIn('best_policy_1.01_step_0',
+                    os.listdir(self._iteration_policies_path))
+      # Manually flush the model since we are not going to run another step.
+      self._learner.flush_models()
+      self.assertIn('best_policy_1.07_step_1',
+                    os.listdir(self._iteration_policies_path))
+
+  def test_save_best_model_only_saves_best(self):
+    with local_worker_manager.LocalWorkerPoolManager(
+        blackbox_test_utils.ESWorker,
+        count=1,
+        pickle_func=cloudpickle.dumps,
+        worker_args=(),
+        worker_kwargs={
+            'delta': 1.0,
+            'initial_value': 5
+        }) as pool:
+      self._learner.set_baseline(pool)
+      self._learner.run_step(pool)
+
+      self._learner.run_step(pool)
+      # CHeck the policy from step zero since it will be flushed in step one.
+      self.assertIn('best_policy_0.94_step_0',
+                    os.listdir(self._iteration_policies_path))
+      # Check that the within the next step we only get a new iteration
+      # policy and do not save any new best.
+      current_policies_count = len(os.listdir(self._iteration_policies_path))
+      # Flush the policies since we are not going to run another step.
+      self._learner.flush_models()
+      self.assertLen(
+          os.listdir(self._iteration_policies_path), current_policies_count + 1)

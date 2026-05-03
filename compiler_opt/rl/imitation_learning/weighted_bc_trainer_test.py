@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -156,4 +155,4 @@ class TestTrainingWeights(tf.test.TestCase):
 
 
 if __name__ == '__main__':
-  multiprocessing.handle_main(functools.partial(app.run, tf.test.main))
+  multiprocessing.handle_test_main(functools.partial(app.run, tf.test.main))

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +14,7 @@
 """LLVM Policy Trainer."""
 
 import time
+from collections.abc import Callable
 
 from absl import logging
 
@@ -26,11 +26,10 @@ from tf_agents.policies import policy_loader
 from tf_agents import trajectories
 
 from tf_agents.utils import common as common_utils
-from typing import Optional
 
 
 @gin.configurable
-class Trainer(object):
+class Trainer:
   """Object that trains LLVM policy.
 
   After initialization, the function 'train' can be called multiple times to
@@ -47,9 +46,9 @@ class Trainer(object):
       self,
       root_dir: str,
       agent: tf_agent.TFAgent,
-      random_network_distillation: Optional[
-          random_net_distillation.RandomNetworkDistillation] = None,
-      warmstart_policy_dir: Optional[str] = None,
+      random_network_distillation: random_net_distillation
+      .RandomNetworkDistillation | None = None,
+      warmstart_policy_dir: str | None = None,
       # Params for summaries and logging
       checkpoint_interval=10000,
       log_interval=100,
@@ -115,6 +114,15 @@ class Trainer(object):
         ckpt_dir=self._root_dir,
         agent=self._agent,
         global_step=self._global_step)
+
+    if self._checkpointer.checkpoint_exists and warmstart_policy_dir:
+      raise ValueError(
+          f'Checkpoint exists at {self._root_dir}, but warmstart policy dir is'
+          ' also provided. This is not supported; please provide only one of'
+          ' these. To warmstart, use a different root_dir which does not have'
+          ' a checkpoint. Or, to restore from a checkpoint, do not provide a'
+          ' warmstart policy dir.')
+
     self._checkpointer.initialize_or_restore()
 
     self._start_time = time.time()
@@ -200,7 +208,11 @@ class Trainer(object):
   def global_step_numpy(self):
     return self._global_step.numpy()
 
-  def train(self, dataset_iter, monitor_dict, num_iterations: int):
+  def train(self,
+            dataset_iter,
+            monitor_dict,
+            num_iterations: int,
+            hooks: list[tuple[int, Callable[[], None]]] | None = None):
     """Trains policy with data from dataset_iter for num_iterations steps."""
     self._reset_metrics()
     # context management is implemented in decorator
@@ -209,7 +221,7 @@ class Trainer(object):
     with tf.summary.record_if(lambda: tf.math.equal(
         self._global_step % self._summary_export_interval, 0)):
       # pytype: enable=attribute-error
-      for _ in range(num_iterations):
+      for iteration_index in range(num_iterations):
         # When the data is not enough to fill in a batch, next(dataset_iter)
         # will throw StopIteration exception, logging a warning message instead
         # of killing the training when it happens.
@@ -217,8 +229,8 @@ class Trainer(object):
           experience = next(dataset_iter)
         except StopIteration:
           logging.warning(
-              ('Warning: skip training because do not have enough data to fill '
-               'in a batch, consider increase data or reduce batch size.'))
+              'Warning: skip training because do not have enough data to fill '
+              'in a batch, consider increase data or reduce batch size.')
           break
 
         # random network distillation for intrinsic reward generation
@@ -232,3 +244,8 @@ class Trainer(object):
         self._update_metrics(experience, monitor_dict)
         self._log_experiment(loss.loss)
         self._save_checkpoint()
+
+        if hooks is not None:
+          for hook_iterations, hook_fn in hooks:
+            if (iteration_index + 1) % hook_iterations == 0:
+              hook_fn()

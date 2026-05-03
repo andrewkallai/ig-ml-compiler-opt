@@ -60,11 +60,9 @@ ADMIN_PACKAGES="tmux"
         python-is-python3 \
         $TF_API_DEP_PACKAGES \
         $ADMIN_PACKAGES \
-        g++ \
-        cmake/bullseye-backports \
-        cmake-data/bullseye-backports \
+        cmake \
+        cmake-data \
         ccache \
-        binutils-gold \
         binutils-dev \
         ninja-build \
         pkg-config \
@@ -84,15 +82,20 @@ ADMIN_PACKAGES="tmux"
         libgss-dev \
         python3-dev \
         wget \
-        zlib1g-dev
+        zlib1g-dev \
+        lsb-release \
+        software-properties-common \
+        gnupg
+
+      bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)" 20
+      ln -sf /usr/bin/clang-20 /usr/bin/cc
+      ln -sf /usr/bin/clang++-20 /usr/bin/c++
+      ln -sf /usr/bin/ld.lld-20 /usr/bin/ld
 
     ) && exit 0
   done
   exit 1
 ) || on_error "Failed to install required packages."
-
-update-alternatives --install "/usr/bin/ld" "ld" "/usr/bin/ld.gold" 20
-update-alternatives --install "/usr/bin/ld" "ld" "/usr/bin/ld.bfd" 10
 
 userdel buildbot
 groupadd buildbot
@@ -114,15 +117,20 @@ else
   echo "NOT building TFLite - this is a release only bot."
 fi
 
-wget --quiet https://raw.githubusercontent.com/google/ml-compiler-opt/main/Pipfile \
-  || on_error "failed to get Pipfile"
-wget --quiet https://raw.githubusercontent.com/google/ml-compiler-opt/main/Pipfile.lock \
-  || on_error "failed to get Pipfile.lock"
+pushd /tmp
+sudo -u buildbot git clone https://github.com/google/ml-compiler-opt || on_error "failed to clone ml-compiler-opt repo"
+pushd ml-compiler-opt
 
-# install the tf pip package for the AOT ("release" scenario).
-sudo -u buildbot python3 -m pip install pipenv
-sudo -u buildbot python3 -m pipenv sync --categories "packages dev-packages" --system
-python3 -m pip install buildbot-worker==2.9.0
+# install the tf pip package for the AOT ("release" scenario) and for test model builds.
+sudo -u buildbot python3 -m pip install --break-system-packages pipenv
+echo installed pipenv
+sudo -u buildbot python3 versioned_pipenv sync --extra-pip-args="--break-system-packages" --categories "packages dev-packages" --system
+echo used pipenv
+popd
+popd
+
+python3 -m pip install --break-system-packages buildbot-worker==2.9.0
+echo installed buildbot worker
 
 TF_PIP=$(sudo -u buildbot python3 -c "import tensorflow as tf; import os; print(os.path.dirname(tf.__file__))")
 
@@ -163,7 +171,7 @@ rm -f /b/buildbot.tac
 
 
 WORKER_NAME="$(hostname)"
-WORKER_PASSWORD="$(gsutil cat gs://ml-compiler-opt-buildbot/buildbot_password)"
+WORKER_PASSWORD="$(gcloud storage cat gs://ml-compiler-opt-buildbot/buildbot_password)"
 SERVICE_NAME=buildbot-worker@b.service
 [[ -d /var/lib/buildbot/workers/b ]] || ln -s $BOT_DIR /var/lib/buildbot/workers/b
 

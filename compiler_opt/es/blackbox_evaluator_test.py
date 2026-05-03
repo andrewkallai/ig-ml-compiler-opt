@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +18,10 @@ import concurrent.futures
 from absl.testing import absltest
 
 from compiler_opt.distributed.local import local_worker_manager
-from compiler_opt.rl import corpus
+from compiler_opt.rl import compilation_runner, corpus
 from compiler_opt.es import blackbox_test_utils
 from compiler_opt.es import blackbox_evaluator
+from compiler_opt.es import blackbox_optimizers
 
 
 class BlackboxEvaluatorTests(absltest.TestCase):
@@ -29,9 +29,14 @@ class BlackboxEvaluatorTests(absltest.TestCase):
 
   def test_sampling_get_results(self):
     with local_worker_manager.LocalWorkerPoolManager(
-        blackbox_test_utils.ESWorker, count=3, arg='', kwarg='') as pool:
+        blackbox_test_utils.ESWorker, count=3, worker_args=(),
+        worker_kwargs={}) as pool:
       perturbations = [b'00', b'01', b'10']
-      evaluator = blackbox_evaluator.SamplingBlackboxEvaluator(None, 5, 5, None)
+      evaluator = blackbox_evaluator.SamplingBlackboxEvaluator(
+          train_corpus=None,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          total_num_perturbations=5,
+          num_ir_repeats_within_worker=0)
       # pylint: disable=protected-access
       evaluator._samples = [[corpus.ModuleSpec(name='name1', size=1)],
                             [corpus.ModuleSpec(name='name2', size=1)],
@@ -39,39 +44,190 @@ class BlackboxEvaluatorTests(absltest.TestCase):
       # pylint: enable=protected-access
       results = evaluator.get_results(pool, perturbations)
       self.assertSequenceAlmostEqual([result.result() for result in results],
-                                     [1.0, 1.0, 1.0])
+                                     [0.99, 0.99, 0.99])
 
-  def test_get_rewards(self):
-    f1 = concurrent.futures.Future()
-    f1.set_exception(None)
-    f2 = concurrent.futures.Future()
-    f2.set_result(2)
-    results = [f1, f2]
-    evaluator = blackbox_evaluator.SamplingBlackboxEvaluator(None, 5, 5, None)
-    rewards = evaluator.get_rewards(results)
-    self.assertEqual(rewards, [None, 2])
+  def test_sampling_set_baseline(self):
+    with local_worker_manager.LocalWorkerPoolManager(
+        blackbox_test_utils.SizeReturningESWorker,
+        count=1,
+        worker_args=(),
+        worker_kwargs={}) as pool:
+      test_corpus = corpus.create_corpus_for_testing(
+          location=self.create_tempdir().full_path,
+          elements=[
+              corpus.ModuleSpec(name='name1', size=10, command_line=('-cc1',))
+          ])
+      evaluator = blackbox_evaluator.SamplingBlackboxEvaluator(
+          train_corpus=test_corpus,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          total_num_perturbations=1)
+      evaluator.load_samples()
+      evaluator.ensure_baselines(pool)
+      # pylint: disable=protected-access
+      self.assertAlmostEqual(evaluator._baselines, [10])
+
+  def test_sampling_get_rewards_without_baseline(self):
+    evaluator = blackbox_evaluator.SamplingBlackboxEvaluator(
+        train_corpus=None,
+        estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+        total_num_perturbations=5,
+        num_ir_repeats_within_worker=0)
+    self.assertRaises(RuntimeError, evaluator.get_rewards, None)
+
+  def test_sampling_get_rewards_with_baseline(self):
+    with local_worker_manager.LocalWorkerPoolManager(
+        blackbox_test_utils.SizeReturningESWorker,
+        count=1,
+        worker_args=(),
+        worker_kwargs={}) as pool:
+      test_corpus = corpus.create_corpus_for_testing(
+          location=self.create_tempdir().full_path,
+          elements=[
+              corpus.ModuleSpec(name='name1', size=1, command_line=('-cc1',))
+          ])
+      evaluator = blackbox_evaluator.SamplingBlackboxEvaluator(
+          train_corpus=test_corpus,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          total_num_perturbations=2)
+
+      evaluator.load_samples()
+      evaluator.ensure_baselines(pool)
+
+      f_policy1 = concurrent.futures.Future()
+      f_policy1.set_result(1.5)
+      f_policy2 = concurrent.futures.Future()
+      f_policy2.set_result(0.5)
+      policy_results = [f_policy1, f_policy2]
+
+      rewards = evaluator.get_rewards(policy_results)
+      expected_rewards = [
+          compilation_runner.calculate_reward(1.5, 1.0),
+          compilation_runner.calculate_reward(0.5, 1.0)
+      ]
+      self.assertSequenceAlmostEqual(rewards, expected_rewards)
 
   def test_trace_get_results(self):
     with local_worker_manager.LocalWorkerPoolManager(
-        blackbox_test_utils.ESTraceWorker, count=3, arg='', kwarg='') as pool:
+        blackbox_test_utils.ESTraceWorker,
+        count=3,
+        worker_args=(),
+        worker_kwargs={}) as pool:
       perturbations = [b'00', b'01', b'10']
       test_corpus = corpus.create_corpus_for_testing(
           location=self.create_tempdir().full_path,
-          elements=[corpus.ModuleSpec(name='name1', size=1)])
+          elements=[
+              corpus.ModuleSpec(name='name1', size=1, command_line=('-cc1',))
+          ])
       evaluator = blackbox_evaluator.TraceBlackboxEvaluator(
-          test_corpus, 5, 'fake_bb_trace_path', 'fake_function_index_path')
+          train_corpus=test_corpus,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          bb_trace_path='fake_bb_trace_path',
+          function_index_path='fake_function_index_path')
+      # pylint: disable=protected-access
+      evaluator._baselines = [1]
+      # pylint: enable=protected-access
       results = evaluator.get_results(pool, perturbations)
       self.assertSequenceAlmostEqual([result.result() for result in results],
                                      [1.0, 1.0, 1.0])
 
   def test_trace_set_baseline(self):
     with local_worker_manager.LocalWorkerPoolManager(
-        blackbox_test_utils.ESTraceWorker, count=1, arg='', kwarg='') as pool:
+        blackbox_test_utils.ESTraceWorker,
+        count=1,
+        worker_args=(),
+        worker_kwargs={}) as pool:
       test_corpus = corpus.create_corpus_for_testing(
           location=self.create_tempdir().full_path,
-          elements=[corpus.ModuleSpec(name='name1', size=1)])
+          elements=[
+              corpus.ModuleSpec(name='name1', size=1, command_line=('-cc1',))
+          ])
       evaluator = blackbox_evaluator.TraceBlackboxEvaluator(
-          test_corpus, 5, 'fake_bb_trace_path', 'fake_function_index_path')
+          train_corpus=test_corpus,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          bb_trace_path='fake_bb_trace_path',
+          function_index_path='fake_function_index_path')
       evaluator.set_baseline(pool)
       # pylint: disable=protected-access
-      self.assertAlmostEqual(evaluator._baseline, 10)
+      self.assertLen(evaluator._baselines, 1)
+      self.assertAlmostEqual(evaluator._baselines[0], 10)
+      # pylint: enable=protected-access
+
+  def test_trace_get_rewards(self):
+    f1 = concurrent.futures.Future()
+    f1.set_result(2)
+    f2 = concurrent.futures.Future()
+    f2.set_result(3)
+    results = [f1, f2]
+    test_corpus = corpus.create_corpus_for_testing(
+        location=self.create_tempdir().full_path,
+        elements=[
+            corpus.ModuleSpec(name='name1', size=1, command_line=('-cc1',))
+        ])
+    evaluator = blackbox_evaluator.TraceBlackboxEvaluator(
+        train_corpus=test_corpus,
+        estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+        bb_trace_path='fake_bb_trace_path',
+        function_index_path='fake_function_index_path')
+
+    # pylint: disable=protected-access
+    evaluator._current_baselines = [2, 3]
+    # pylint: enable=protected-access
+    rewards = evaluator.get_rewards(results)
+
+    # Only check for two decimal places as the reward calculation uses a
+    # reasonably large delta (0.01) when calculating the difference to
+    # prevent division by zero.
+    self.assertSequenceAlmostEqual(rewards, [0, 0], 2)
+
+  def test_trace_multiple_get_results(self):
+    with local_worker_manager.LocalWorkerPoolManager(
+        blackbox_test_utils.ESTraceWorker,
+        count=3,
+        worker_args=(),
+        worker_kwargs={}) as pool:
+      perturbations = [b'00', b'01', b'10']
+      test_corpus = corpus.create_corpus_for_testing(
+          location=self.create_tempdir().full_path,
+          elements=[
+              corpus.ModuleSpec(name='name1', size=1, command_line=('-cc1',))
+          ])
+      bb_trace_dir = self.create_tempdir()
+      bb_trace_dir.create_file('bb_trace1.pb')
+      bb_trace_dir.create_file('bb_trace2.pb')
+      evaluator = blackbox_evaluator.TraceBlackboxEvaluator(
+          train_corpus=test_corpus,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          bb_trace_path=bb_trace_dir.full_path,
+          function_index_path='fake_function_index_path')
+      # pylint: disable=protected-access
+      evaluator._baselines = [1, 2]
+      # pylint: enable=protected-access
+      results = evaluator.get_results(pool, perturbations)
+      self.assertSequenceAlmostEqual([result.result() for result in results],
+                                     [1.0, 1.0, 1.0])
+
+  def test_trace_multiple_set_baseline(self):
+    with local_worker_manager.LocalWorkerPoolManager(
+        blackbox_test_utils.ESTraceWorker,
+        count=1,
+        worker_args=(),
+        worker_kwargs={}) as pool:
+      test_corpus = corpus.create_corpus_for_testing(
+          location=self.create_tempdir().full_path,
+          elements=[
+              corpus.ModuleSpec(name='name1', size=1, command_line=('-cc1',))
+          ])
+      bb_trace_dir = self.create_tempdir()
+      bb_trace_dir.create_file('bb_trace1.pb')
+      bb_trace_dir.create_file('bb_trace2.pb')
+      evaluator = blackbox_evaluator.TraceBlackboxEvaluator(
+          train_corpus=test_corpus,
+          estimator_type=blackbox_optimizers.EstimatorType.FORWARD_FD,
+          bb_trace_path=bb_trace_dir.full_path,
+          function_index_path='fake_function_index_path')
+      evaluator.set_baseline(pool)
+      # pylint: disable=protected-access
+      self.assertLen(evaluator._baselines, 2)
+      self.assertAlmostEqual(evaluator._baselines[0], 10)
+      self.assertAlmostEqual(evaluator._baselines[1], 10)
+      # pylint: enable=protected-access

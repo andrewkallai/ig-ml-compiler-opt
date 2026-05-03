@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,29 +16,24 @@ import json
 import os
 from unittest import mock
 
-from absl import flags
 from absl.testing import absltest
-from absl.testing import flagsaver
 import gin
 import tensorflow as tf
 
 # This is https://github.com/google/pytype/issues/764
 from google.protobuf import text_format  # pytype: disable=pyi-error
 from compiler_opt.rl import compilation_runner
-from compiler_opt.tools import generate_default_trace
+from compiler_opt.tools import generate_default_trace_lib
 
 from tf_agents.system import system_multiprocessing as multiprocessing
-
-flags.FLAGS['num_workers'].allow_override = True
-flags.FLAGS['gin_files'].allow_override = True
-flags.FLAGS['gin_bindings'].allow_override = True
 
 
 @gin.configurable(module='runners')
 class MockCompilationRunner(compilation_runner.CompilationRunner):
   """A compilation runner just for test."""
 
-  def __init__(self, sentinel=None):
+  def __init__(self, moving_average_decay_rate: float, sentinel=None):
+    del moving_average_decay_rate  # Unused.
     assert sentinel == 42
     super().__init__()
 
@@ -61,16 +55,17 @@ class MockCompilationRunner(compilation_runner.CompilationRunner):
     sequence_example = text_format.Parse(sequence_example_text,
                                          tf.train.SequenceExample())
 
+    key = f'key_{os.getpid()}'
     return compilation_runner.CompilationResult(
         sequence_examples=[sequence_example],
         reward_stats={
-            'default':
+            key:
                 compilation_runner.RewardStat(
                     default_reward=1, moving_average_reward=2)
         },
         rewards=[1.2],
         policy_rewards=[18],
-        keys=['default'],
+        keys=[key],
         model_id=model_id)
 
 
@@ -105,15 +100,24 @@ class GenerateDefaultTraceTest(absltest.TestCase):
     mock_compilation_runner = MockCompilationRunner
     mock_get_runner.return_value = mock_compilation_runner
 
-    with flagsaver.flagsaver(
-        data_path=tmp_dir.full_path,
+    generate_default_trace_lib.generate_trace(
+        tmp_dir.full_path,
+        os.path.join(tmp_dir.full_path, 'output'),
+        os.path.join(tmp_dir.full_path, 'output_performance'),
         num_workers=2,
-        output_path=os.path.join(tmp_dir.full_path, 'output'),
-        output_performance_path=os.path.join(tmp_dir.full_path,
-                                             'output_performance'),
-    ):
-      generate_default_trace.generate_trace()
+        sampling_rate=1,
+        module_filter_str=None,
+        key_filter=None,
+        keys_file_path=os.path.join(tmp_dir.full_path, 'keys_file'),
+        policy_path='')
+
+    with open(
+        os.path.join(tmp_dir.full_path, 'keys_file'),
+        encoding='utf-8') as keys_file:
+      keys = [key_line.strip() for key_line in keys_file.readlines()]
+      for key in keys:
+        self.assertStartsWith(key, 'key_')
 
 
 if __name__ == '__main__':
-  multiprocessing.handle_main(absltest.main)
+  multiprocessing.handle_test_main(absltest.main)

@@ -1,0 +1,110 @@
+# Copyright 2020 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Compiles a corpus for further downstream processing."""
+
+import os
+import time
+
+from absl import app
+from absl import flags
+from absl import logging
+import gin
+
+from compiler_opt.rl import corpus
+from compiler_opt.es.regalloc_trace import regalloc_trace_worker
+from compiler_opt.rl import registry
+
+_CORPUS_PATH = flags.DEFINE_string(
+    'corpus_path', None, 'The path to the corpus.', required=True)
+_OUTPUT_PATH = flags.DEFINE_string(
+    'output_path', None, 'The path to the output.', required=True)
+_GIN_FILES = flags.DEFINE_multi_string(
+    'gin_files', [], 'List of paths to gin configuration files to use.')
+_GIN_BINDINGS = flags.DEFINE_multi_string(
+    'gin_bindings', [], 'Gin bindings to override the values in config files.')
+_TFLITE_POLICY_PATH = flags.DEFINE_string(
+    'tflite_policy_path', None,
+    'The path to the TFLite policy to use, if there is one.')
+_MODE = flags.DEFINE_enum('mode', 'full', ['full', 'bc', 'asm'],
+                          'How far to compile the corpus.')
+
+
+def main(_) -> None:
+  gin.parse_config_files_and_bindings(
+      _GIN_FILES.value, _GIN_BINDINGS.value, skip_unknown=False)
+  logging.info(gin.config_str())
+
+  problem_config = registry.get_configuration()
+  additional_compilation_flags = problem_config.flags_to_add()
+  delete_compilation_flags = problem_config.flags_to_delete()
+  replace_compilation_flags = problem_config.flags_to_replace()
+
+  if _MODE.value == 'full':
+    # We do not need to change any flags here because this is what the
+    # compiler is set up to do normally.
+    pass
+  elif _MODE.value == 'bc':
+    # We want to only run through the middle end pipeline, so we pass
+    # -emit-llvm-bc to emit bitcode after the optimization pipeline has run.
+    additional_compilation_flags = additional_compilation_flags + (
+        '-emit-llvm-bc',)
+  elif _MODE.value == 'asm':
+    # When compiling from bitcode to an object file, we also need to remove all
+    # the flags that can load profiles or ThinLTO indices as they are embedded
+    # within the BC at this stage of compilation.
+    # We additionally need to ensure that middle end optimizations are
+    # disabled. The flag to do this (-disable-llvm-passes) is added directly
+    # to each module command line in bc mode, so we do not need to handle it
+    # here.
+    delete_compilation_flags = delete_compilation_flags + (
+        '-fprofile-sample-use', '-fprofile-instrument-use-path',
+        'fthinlto-index')
+  else:
+    raise ValueError('Invalid mode')
+
+  train_corpus = corpus.Corpus(
+      data_path=_CORPUS_PATH.value,
+      additional_flags=additional_compilation_flags,
+      delete_flags=delete_compilation_flags,
+      replace_flags=replace_compilation_flags,
+  )
+
+  logging.info('Compiling corpus.')
+  compile_start = time.time()
+  # pylint: disable=missing-kwoa
+  worker = regalloc_trace_worker.RegallocTraceWorker(
+      gin_config=gin.operative_config_str())
+  compiled_module_suffix = '.bc' if _MODE.value == 'bc' else '.bc.o'
+  worker.build_corpus(train_corpus.module_specs, _OUTPUT_PATH.value,
+                      _TFLITE_POLICY_PATH.value, compiled_module_suffix)
+  compile_end = time.time()
+  compile_duration = compile_end - compile_start
+  logging.info('Compilation took %ds', compile_duration)
+
+  if _MODE.value == 'bc':
+    for module in train_corpus.module_specs:
+      command_file = os.path.join(_CORPUS_PATH.value, module.name) + '.cmd'
+      with open(command_file, encoding='utf-8') as command_file_handle:
+        command_tuple = tuple(command_file_handle.read().split('\0')[:-1])
+      command_tuple = command_tuple + ('-disable-llvm-passes',)
+      new_command_file_path = (
+          os.path.join(_OUTPUT_PATH.value, module.name) + '.cmd')
+      with open(
+          new_command_file_path, 'w',
+          encoding='utf-8') as new_command_file_handle:
+        new_command_file_handle.write('\0'.join(command_tuple))
+
+
+if __name__ == '__main__':
+  app.run(main)

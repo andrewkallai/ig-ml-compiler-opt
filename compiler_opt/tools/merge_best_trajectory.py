@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,8 +30,6 @@ _OUTPUT_JSON_PATH = flags.DEFINE_string(
 _OUTPUT_CSV_PATH = flags.DEFINE_string(
     'output_csv_path', '',
     'output path of the merged best trajectory repo in csv format if given.')
-
-FLAGS = flags.FLAGS
 
 
 def main(argv):

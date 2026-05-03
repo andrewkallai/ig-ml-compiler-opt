@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,6 @@
 
 import os
 import tempfile
-from typing import Dict, Tuple
 
 import gin
 import tensorflow as tf
@@ -41,26 +39,30 @@ class InliningRunner(compilation_runner.CompilationRunner):
       ir_path, tf_policy_path, default_reward, moving_average_reward)
   """
 
-  def __init__(self, llvm_size_path: str, *args, **kwargs):
-    super().__init__(*args, **kwargs)
+  def __init__(self,
+               *,
+               llvm_size_path: str,
+               ir2vec_vocab_path: str | None = None,
+               **kwargs):
+    super().__init__(**kwargs)
     self._llvm_size_path = llvm_size_path
+    self._ir2vec_vocab_path = ir2vec_vocab_path
 
-  def compile_fn(
-      self, command_line: corpus.FullyQualifiedCmdLine, tf_policy_path: str,
-      reward_only: bool,
-      workdir: str) -> Dict[str, Tuple[tf.train.SequenceExample, float]]:
-    """Run inlining for the given IR file under the given policy.
+  def compile_and_get_size(self, command_line: corpus.FullyQualifiedCmdLine,
+                           tf_policy_path: str | None,
+                           workdir: str) -> tuple[float, str]:
+    """Run inlining for the given IR file. Compiles by using a policy
+    if tf_policy_path is not None.
 
     Args:
       command_line: the fully qualified command line.
       tf_policy_path: path to TF policy directory on local disk.
-      reward_only: whether only return native size.
+      workdir: working directory.
 
     Returns:
-      A dict mapping from example identifier to tuple containing:
-        sequence_example: A tf.SequenceExample proto describing compilation
-        trace, None if reward_only == True.
+      A tuple containing:
         native_size: Native size of the final native code.
+        log_path: Log path.
 
     Raises:
       subprocess.CalledProcessError: if process fails.
@@ -78,10 +80,16 @@ class InliningRunner(compilation_runner.CompilationRunner):
     cmdline = []
     if self._launcher_path:
       cmdline.append(self._launcher_path)
-    cmdline.extend([self._clang_path] + list(command_line) + [
-        '-mllvm', '-enable-ml-inliner=development', '-mllvm', '-training-log=' +
-        log_path, '-o', output_native_path
-    ])
+    cmdline.extend([self._clang_path] + list(command_line))
+
+    mllvm_args = ['-mllvm', '-enable-ml-inliner=development']
+    if self._ir2vec_vocab_path:
+      mllvm_args.extend([
+          '-mllvm', '-ml-inliner-ir2vec-vocab-file=' + self._ir2vec_vocab_path
+      ])
+    mllvm_args.extend(['-mllvm', '-training-log=' + log_path])
+
+    cmdline.extend(mllvm_args + ['-o', output_native_path])
     if tf_policy_path:
       cmdline.extend(
           ['-mllvm', '-ml-inliner-model-under-training=' + tf_policy_path])
@@ -89,19 +97,41 @@ class InliningRunner(compilation_runner.CompilationRunner):
                                                  self._compilation_timeout,
                                                  self._cancellation_manager)
     cmdline = [self._llvm_size_path, output_native_path]
-    output_bytes = compilation_runner.start_cancellable_process(
+    output = compilation_runner.start_cancellable_process(
         cmdline,
         timeout=self._compilation_timeout,
         cancellation_manager=self._cancellation_manager,
-        want_output=True)
-    if not output_bytes:
+        want_output=True,
+        text=True)
+    if not output:
       raise RuntimeError(f'Empty llvm-size output: {" ".join(cmdline)}')
-    output = output_bytes.decode('utf-8')
     tmp = output.split('\n')
     if len(tmp) != 3:
       raise RuntimeError(f'Wrong llvm-size output {output}')
     tmp = tmp[1].split('\t')
     native_size = int(tmp[0])
+    return native_size, log_path
+
+  def compile_fn(
+      self, command_line: corpus.FullyQualifiedCmdLine, tf_policy_path: str,
+      reward_only: bool,
+      workdir: str) -> dict[str, tuple[tf.train.SequenceExample, float]]:
+    """Wraps around compile_and_get_size and returns a dict mapping.
+
+    Args:
+      command_line: the fully qualified command line.
+      tf_policy_path: path to TF policy directory on local disk.
+      reward_only: whether only return native size.
+
+    Returns:
+      A dict mapping from example identifier to tuple containing:
+        sequence_example: A tf.SequenceExample proto describing compilation
+        trace, None if reward_only == True.
+        native_size: Native size of the final native code.
+    """
+
+    native_size, log_path = self.compile_and_get_size(command_line,
+                                                      tf_policy_path, workdir)
 
     if native_size == 0:
       return {}

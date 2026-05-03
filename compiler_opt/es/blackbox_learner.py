@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,22 +13,19 @@
 # limitations under the License.
 """Class for coordinating blackbox optimization."""
 
-import os
 from absl import logging
 import dataclasses
 import gin
 import math
+import multiprocessing
 import numpy as np
 import numpy.typing as npt
-import tempfile
 import tensorflow as tf
-from typing import List, Optional, Protocol
+from typing import Protocol
 
 from compiler_opt.distributed.worker import FixedWorkerPool
 from compiler_opt.es import blackbox_optimizers
-from compiler_opt.es import policy_utils
 from compiler_opt.rl import corpus
-from compiler_opt.rl import policy_saver
 from compiler_opt.es import blackbox_evaluator  # pylint: disable=unused-import
 
 # Pytype cannot pick up the pyi file for tensorflow.summary. Disable the error
@@ -81,9 +77,12 @@ class BlackboxLearnerConfig:
   # Learning rate
   step_size: float
 
+  # Whether or not to save a policy if it has the greatest reward seen so far.
+  save_best_policy: bool
 
-def _prune_skipped_perturbations(perturbations: List[npt.NDArray[np.float32]],
-                                 rewards: List[Optional[float]]):
+
+def _prune_skipped_perturbations(perturbations: list[npt.NDArray[np.float32]],
+                                 rewards: list[float | None]):
   """Remove perturbations that were skipped during the training step.
 
   Perturbations may be skipped due to an early exit condition or a server error
@@ -129,20 +128,18 @@ class BlackboxLearner:
   def __init__(self,
                blackbox_opt: blackbox_optimizers.BlackboxOptimizer,
                train_corpus: corpus.Corpus,
-               tf_policy_path: str,
                output_dir: str,
                policy_saver_fn: PolicySaverCallableType,
                model_weights: npt.NDArray[np.float32],
                config: BlackboxLearnerConfig,
                initial_step: int = 0,
                deadline: float = 30.0,
-               seed: Optional[int] = None):
+               seed: int | None = None):
     """Construct a BlackboxLeaner.
 
     Args:
       blackbox_opt: the blackbox optimizer to use
       train_corpus: the training corpus to utiilize
-      tf_policy_path: where to write the tf policy
       output_dir: the directory to write all outputs
       policy_saver_fn: function to save a policy to cns
       model_weights: the weights of the current model
@@ -152,7 +149,6 @@ class BlackboxLearner:
     """
     self._blackbox_opt = blackbox_opt
     self._train_corpus = train_corpus
-    self._tf_policy_path = tf_policy_path
     self._output_dir = output_dir
     self._policy_saver_fn = policy_saver_fn
     self._model_weights = model_weights
@@ -160,13 +156,24 @@ class BlackboxLearner:
     self._step = initial_step
     self._deadline = deadline
     self._seed = seed
+    self._global_max_reward = 0.0
 
     self._summary_writer = tf.summary.create_file_writer(output_dir)
 
-    self._evaluator = self._config.evaluator(self._train_corpus,
-                                             self._config.estimator_type)
+    self._evaluator = self._config.evaluator(
+        train_corpus=self._train_corpus,
+        estimator_type=self._config.estimator_type)
 
-  def _get_perturbations(self) -> List[npt.NDArray[np.float32]]:
+    self._thread_pool = multiprocessing.pool.ThreadPool(processes=1)
+    self._models_to_save = []
+    self._models_to_flush = []
+
+  def __del__(self):
+    self._start_model_saving()
+    self._flush_models()
+    self._thread_pool.close()
+
+  def _get_perturbations(self) -> list[npt.NDArray[np.float32]]:
     """Get perturbations for the model weights."""
     rng = np.random.default_rng(seed=self._seed)
     return [
@@ -175,8 +182,8 @@ class BlackboxLearner:
         for _ in range(self._config.total_num_perturbations)
     ]
 
-  def _update_model(self, perturbations: List[npt.NDArray[np.float32]],
-                    rewards: List[float]) -> None:
+  def _update_model(self, perturbations: list[npt.NDArray[np.float32]],
+                    rewards: list[float]) -> None:
     """Update the model given a list of perturbations and rewards."""
     self._model_weights = self._blackbox_opt.run_step(
         perturbations=np.array(perturbations),
@@ -184,11 +191,11 @@ class BlackboxLearner:
         current_input=self._model_weights,
         current_value=np.mean(rewards))
 
-  def _log_rewards(self, rewards: List[float]) -> None:
+  def _log_rewards(self, rewards: list[float]) -> None:
     """Log reward to console."""
     logging.info('Train reward: [%f]', np.mean(rewards))
 
-  def _log_tf_summary(self, rewards: List[float]) -> None:
+  def _log_tf_summary(self, rewards: list[float]) -> None:
     """Log tensorboard data."""
     with self._summary_writer.as_default():
       tf.summary.scalar(
@@ -200,7 +207,7 @@ class BlackboxLearner:
       for percentile_to_report in _PERCENTILES_TO_REPORT:
         percentile_value = np.percentile(rewards, percentile_to_report)
         tf.summary.scalar(
-            f'reward/{percentile_value}_percentile',
+            f'reward/{percentile_to_report}_percentile',
             percentile_value,
             step=self._step)
 
@@ -229,37 +236,35 @@ class BlackboxLearner:
           len(train_wins) / len(rewards),
           step=self._step)
 
-  def _save_model(self) -> None:
+  def _save_model(self, parameters: npt.NDArray[np.float32],
+                  policy_name: str) -> None:
     """Save the model."""
     logging.info('Saving the model.')
-    self._policy_saver_fn(
-        parameters=self._model_weights, policy_name=f'iteration{self._step}')
+    self._models_to_save.append((parameters, policy_name))
+
+  def _start_model_saving(self):
+    for model_parameters, model_name in self._models_to_save:
+      self._models_to_flush.append(
+          self._thread_pool.apply_async(self._policy_saver_fn,
+                                        (model_parameters, model_name)))
+    self._models_to_save.clear()
+
+  def _flush_models(self):
+    for model_to_flush in self._models_to_flush:
+      model_to_flush.wait()
+      if not model_to_flush.successful():
+        model_to_flush.get()
+    self._models_to_flush.clear()
+
+  def flush_models(self):
+    self._start_model_saving()
+    self._flush_models()
 
   def get_model_weights(self) -> npt.NDArray[np.float32]:
     return self._model_weights
 
-  # TODO: The current conversion is inefficient (performance-wise). We should
-  # consider doing this on the worker side.
-  def _get_policy_from_perturbation(
-      self, perturbation: npt.NDArray[np.float32]) -> policy_saver.Policy:
-    sm = tf.saved_model.load(self._tf_policy_path)
-    # devectorize the perturbation
-    policy_utils.set_vectorized_parameters_for_policy(sm, perturbation)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-      sm_dir = os.path.join(tmpdir, 'sm')
-      tf.saved_model.save(sm, sm_dir, signatures=sm.signatures)
-      src = os.path.join(self._tf_policy_path, policy_saver.OUTPUT_SIGNATURE)
-      dst = os.path.join(sm_dir, policy_saver.OUTPUT_SIGNATURE)
-      tf.io.gfile.copy(src, dst)
-
-      # convert to tflite
-      tfl_dir = os.path.join(tmpdir, 'tfl')
-      policy_saver.convert_mlgo_model(sm_dir, tfl_dir)
-
-      # create and return policy
-      policy_obj = policy_saver.Policy.from_filesystem(tfl_dir)
-      return policy_obj
+  def set_baseline(self, pool: FixedWorkerPool) -> None:
+    self._evaluator.set_baseline(pool)
 
   def run_step(self, pool: FixedWorkerPool) -> None:
     """Run a single step of blackbox learning.
@@ -276,13 +281,15 @@ class BlackboxLearner:
           p for p in initial_perturbations for p in (p, -p)
       ]
 
-    perturbations_as_policies = [
-        self._get_policy_from_perturbation(perturbation)
+    perturbations_as_bytes = [
+        (self._model_weights + perturbation).astype(np.float32).tobytes()
         for perturbation in initial_perturbations
     ]
 
-    results = self._evaluator.get_results(pool, perturbations_as_policies)
+    self._start_model_saving()
+    results = self._evaluator.get_results(pool, perturbations_as_bytes)
     rewards = self._evaluator.get_rewards(results)
+    self._flush_models()
 
     num_pruned = _prune_skipped_perturbations(initial_perturbations, rewards)
     logging.info('Pruned [%d]', num_pruned)
@@ -298,6 +305,20 @@ class BlackboxLearner:
     self._log_rewards(rewards)
     self._log_tf_summary(rewards)
 
-    self._save_model()
+    if self._config.save_best_policy and np.max(
+        rewards) > self._global_max_reward:
+      self._global_max_reward = np.max(rewards)
+      logging.info('Found new best model with reward %f at step '
+                   '%d, saving.', self._global_max_reward, self._step)
+      max_index = np.argmax(rewards)
+      perturbation = initial_perturbations[max_index]
+      self._save_model(
+          parameters=self._model_weights + perturbation,
+          policy_name=f'best_policy_{self._global_max_reward}_step'
+          f'_{self._step}',
+      )
+
+    self._save_model(
+        parameters=self._model_weights, policy_name=f'iteration{self._step}')
 
     self._step += 1

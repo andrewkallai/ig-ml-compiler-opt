@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,6 +13,7 @@
 # limitations under the License.
 """Tests for compiler_opt.rl.compilation_runner."""
 
+import math
 import os
 import string
 import subprocess
@@ -92,10 +92,9 @@ def _mock_compile_fn(file_paths, tf_policy_path, reward_only, workdir):  # pylin
     return {'default': (sequence_example, native_size)}
 
 
-_mock_policy = policy_saver.Policy(bytes(), bytes())
+_mock_policy = policy_saver.Policy(b'', b'')
 
-_mock_loaded_module_spec = corpus.LoadedModuleSpec(
-    name='dummy', loaded_ir=bytes())
+_mock_loaded_module_spec = corpus.LoadedModuleSpec(name='dummy', loaded_ir=b'')
 
 
 class CompilationRunnerTest(tf.test.TestCase):
@@ -218,11 +217,13 @@ class CompilationRunnerTest(tf.test.TestCase):
 
   def test_start_subprocess_output(self):
     cm = compilation_runner.WorkerCancellationManager()
-    output = compilation_runner.start_cancellable_process(
-        ['ls', '-l'], timeout=100, cancellation_manager=cm, want_output=True)
-    if output:
-      output_str = output.decode('utf-8')
-    else:
+    output_str = compilation_runner.start_cancellable_process(
+        ['ls', '-l'],
+        timeout=100,
+        cancellation_manager=cm,
+        want_output=True,
+        text=True)
+    if not output_str:
       self.fail('output should have been non-empty')
     self.assertNotEmpty(output_str)
 
@@ -255,6 +256,14 @@ class CompilationRunnerTest(tf.test.TestCase):
                                                  cancellation_manager=cm)
     # should be at least 1 second due to the pause.
     self.assertGreater(time.time() - start_time, 1)
+
+  def test_calculate_reward_zero_delta(self):
+    reward = compilation_runner.calculate_reward(3, 0)
+    self.assertTrue(math.isfinite(reward))
+
+  def test_calculate_reward(self):
+    reward = compilation_runner.calculate_reward(1, 2)
+    self.assertAlmostEqual(reward, 0.5, 2)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,19 +13,19 @@
 # limitations under the License.
 """Module for training an inlining policy with imitation learning."""
 
-from absl import app
-from absl import flags
-from absl import logging
+import json
 
 import gin
-import json
+import tensorflow as tf
+from absl import app, flags, logging
+
 from compiler_opt.rl import policy_saver
-
+from compiler_opt.rl.imitation_learning.weighted_bc_trainer_lib import (
+    ImitationLearningTrainer,
+    TrainingWeights,
+    WrapKerasModel,
+)
 from compiler_opt.rl.inlining import imitation_learning_config as config
-
-from compiler_opt.rl.imitation_learning.weighted_bc_trainer_lib import TrainingWeights
-from compiler_opt.rl.imitation_learning.weighted_bc_trainer_lib import ImitationLearningTrainer
-from compiler_opt.rl.imitation_learning.weighted_bc_trainer_lib import WrapKerasModel
 
 _TRAINING_DATA = flags.DEFINE_multi_string(
     'training_data', None, 'Training data for one step of BC-Max')
@@ -70,7 +69,7 @@ def train():
         time_step_spec=expected_signature,
         action_spec=action_spec)
     policy_dict = {'tf_agents_policy': wrapped_keras_model}
-    saver = policy_saver.PolicySaver(policy_dict=policy_dict)
+    saver = policy_saver.MLGOPolicySaver(policy_dict=policy_dict)
     saver.save(_SAVE_MODEL_DIR.value)
 
 
@@ -78,6 +77,8 @@ def main(_):
   gin.parse_config_files_and_bindings(
       _GIN_FILES.value, _GIN_BINDINGS.value, skip_unknown=False)
   logging.info(gin.config_str())
+
+  tf.compat.v1.enable_eager_execution()  # pytype: disable=module-attr
 
   train()
 

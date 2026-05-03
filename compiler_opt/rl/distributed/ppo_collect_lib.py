@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,6 @@
 
 import collections
 import os
-from typing import List, Optional
 import tempfile
 import functools
 
@@ -35,6 +33,7 @@ from tf_agents.train.utils import train_utils
 from tf_agents.utils import common
 from tf_agents.trajectories import trajectory
 
+from compiler_opt.distributed import worker_manager
 from compiler_opt.rl import gin_external_configurables  # pylint: disable=unused-import
 from compiler_opt.rl import local_data_collector
 from compiler_opt.rl import corpus
@@ -49,7 +48,7 @@ def _get_policy_bytes(agent):
   """Recover the collect_policy bytes from a TF agent"""
   policy_key = 'collect'
   with tempfile.TemporaryDirectory() as tmpdirname:
-    saver = policy_saver.PolicySaver(policy_dict={
+    saver = policy_saver.MLGOPolicySaver(policy_dict={
         policy_key: agent.collect_policy,
     })
     saver.save(tmpdirname)
@@ -103,8 +102,9 @@ class ReverbCompilationObserver(compilation_runner.CompilationResultObserver):
 
 
 def collect(corpus_path: str, replay_buffer_server_address: str,
-            variable_container_server_address: str, num_workers: Optional[int],
-            worker_manager_class, sequence_length: int) -> None:
+            variable_container_server_address: str, num_workers: int | None,
+            worker_manager_class: type[worker_manager.WorkerManager],
+            sequence_length: int) -> None:
   """Collects experience using a policy updated after every episode.
 
   Args:
@@ -155,7 +155,7 @@ def collect(corpus_path: str, replay_buffer_server_address: str,
   dataset_fn = data_reader.create_flat_sequence_example_dataset_fn(
       agent_cfg=agent_cfg)
 
-  def sequence_example_iterator_fn(seq_ex: List[str]):
+  def sequence_example_iterator_fn(seq_ex: list[str]):
     return iter(dataset_fn(seq_ex).prefetch(tf.data.AUTOTUNE))
 
   cps = corpus.Corpus(
@@ -169,8 +169,9 @@ def collect(corpus_path: str, replay_buffer_server_address: str,
   with worker_manager_class(
       worker_class=problem_config.get_runner_type(),
       count=num_workers,
-      moving_average_decay_rate=1,
-      create_observer_fns=create_observer_fns) as worker_pool:
+      worker_kwargs=dict(
+          moving_average_decay_rate=1,
+          create_observer_fns=create_observer_fns)) as worker_pool:
 
     data_collector = local_data_collector.LocalDataCollector(
         cps=cps,
@@ -196,9 +197,8 @@ def collect(corpus_path: str, replay_buffer_server_address: str,
 @gin.configurable
 def run_collect(root_dir: str, corpus_path: str,
                 replay_buffer_server_address: str,
-                variable_container_server_address: str,
-                num_workers: Optional[int], worker_manager_class,
-                sequence_length: int):
+                variable_container_server_address: str, num_workers: int | None,
+                worker_manager_class, sequence_length: int):
   """Collects experience using a policy updated after every episode.
 
   Waits for a policy to be saved in root_dir before beginning collection.

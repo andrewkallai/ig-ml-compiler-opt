@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,7 +35,7 @@ def main(_):
   final_weights = es_trainer_lib.train()
 
   logging.info("Final Weights:")
-  logging.info(", ".join(final_weights))
+  logging.info(str(final_weights))
 
 
 if __name__ == "__main__":

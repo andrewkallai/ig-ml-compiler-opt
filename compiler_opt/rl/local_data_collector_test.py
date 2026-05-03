@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +16,6 @@
 # pylint: disable=protected-access
 import collections
 import string
-import sys
-from typing import List, Tuple
 
 import tensorflow as tf
 from tf_agents.system import system_multiprocessing as multiprocessing
@@ -32,9 +29,9 @@ from compiler_opt.rl import data_collector
 from compiler_opt.rl import local_data_collector
 from compiler_opt.rl import policy_saver
 
-_policy_str = 'policy'.encode(encoding='utf-8')
+_policy_str = b'policy'
 
-_mock_policy = policy_saver.Policy(output_spec=bytes(), policy=_policy_str)
+_mock_policy = policy_saver.Policy(output_spec=b'', policy=_policy_str)
 
 
 def _get_sequence_example(feature_value):
@@ -116,11 +113,11 @@ class MyRunner(compilation_runner.CompilationRunner):
 class DeterministicSampler(corpus.Sampler):
   """A corpus sampler that returns modules in order, and can also be reset."""
 
-  def __init__(self, module_specs: Tuple[corpus.ModuleSpec]):
+  def __init__(self, module_specs: tuple[corpus.ModuleSpec]):
     super().__init__(module_specs)
     self._cur_pos = 0
 
-  def __call__(self, k: int, n: int = 20) -> List[corpus.ModuleSpec]:
+  def __call__(self, k: int, n: int = 20) -> list[corpus.ModuleSpec]:
     ret = []
     for _ in range(k):
       ret.append(self._module_specs[self._cur_pos % len(self._module_specs)])
@@ -154,7 +151,9 @@ class LocalDataCollectorTest(tf.test.TestCase):
       cps = corpus.create_corpus_for_testing(
           location=self.create_tempdir(),
           elements=[
-              corpus.ModuleSpec(name=f'dummy{i}', size=i) for i in range(100)
+              corpus.ModuleSpec(
+                  name=f'dummy{i}', size=i, command_line=('-cc1',))
+              for i in range(100)
           ],
           sampler_type=DeterministicSampler)
       collector = local_data_collector.LocalDataCollector(
@@ -180,15 +179,8 @@ class LocalDataCollectorTest(tf.test.TestCase):
               'total_trajectory_length': 18,
           }
       }
-      # Issue #38
-      if sys.version_info >= (3, 9):
-        self.assertEqual(monitor_dict,
-                         monitor_dict | expected_monitor_dict_subset)
-      else:
-        self.assertEqual(monitor_dict, {
-            **monitor_dict,
-            **expected_monitor_dict_subset
-        })
+      self.assertEqual(monitor_dict,
+                       monitor_dict | expected_monitor_dict_subset)
       data_iterator, monitor_dict = collector.collect_data(
           policy=_mock_policy, model_id=0)
       data = list(data_iterator)
@@ -200,15 +192,8 @@ class LocalDataCollectorTest(tf.test.TestCase):
               'total_trajectory_length': 18,
           }
       }
-      # Issue #38
-      if sys.version_info >= (3, 9):
-        self.assertEqual(monitor_dict,
-                         monitor_dict | expected_monitor_dict_subset)
-      else:
-        self.assertEqual(monitor_dict, {
-            **monitor_dict,
-            **expected_monitor_dict_subset
-        })
+      self.assertEqual(monitor_dict,
+                       monitor_dict | expected_monitor_dict_subset)
 
       collector.close_pool()
 
@@ -230,7 +215,8 @@ class LocalDataCollectorTest(tf.test.TestCase):
           cps=corpus.create_corpus_for_testing(
               location=self.create_tempdir(),
               elements=[
-                  corpus.ModuleSpec(name=f'dummy{i}', size=1)
+                  corpus.ModuleSpec(
+                      name=f'dummy{i}', size=1, command_line=('-cc1',))
                   for i in range(200)
               ]),
           num_modules=4,

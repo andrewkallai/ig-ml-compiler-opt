@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +21,7 @@ import signal
 import subprocess
 import tempfile
 import threading
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 from absl import flags
 from absl import logging
@@ -44,7 +43,7 @@ _EXPLICIT_TEMPS_DIR = flags.DEFINE_string(
     'Put temporary files into given directory and keep them past exit.')
 
 
-def _calculate_reward(policy: float, baseline: float) -> float:
+def calculate_reward(policy: float, baseline: float) -> float:
   # This assumption allows us to imply baseline + constant.DELTA > 0.
   assert baseline >= 0
   return 1 - (policy + constant.DELTA) / (baseline + constant.DELTA)
@@ -63,9 +62,9 @@ class NonTemporaryDirectory:
 
   def __init__(
       self,
-      suffix: Optional[str] = None,
-      prefix: Optional[str] = None,
-      dir: Optional[str] = None,  # pylint: disable=redefined-builtin
+      suffix: str | None = None,
+      prefix: str | None = None,
+      dir: str | None = None,  # pylint: disable=redefined-builtin
       ignore_cleanup_errors: bool = False):
     _ = ignore_cleanup_errors  # unused
     self.name = tempfile.mkdtemp(suffix, prefix, dir)
@@ -80,7 +79,7 @@ class NonTemporaryDirectory:
     pass
 
 
-def get_workdir_context(explicit_temps_dir: Optional[str] = None):
+def get_workdir_context(explicit_temps_dir: str | None = None):
   """Return a context which manages how the temperory directories are handled.
 
   When the flag explicit_temps_dir is specified temporary directories are
@@ -210,10 +209,13 @@ class WorkerCancellationManager:
 
 
 def start_cancellable_process(
-    cmdline: List[str],
+    cmdline: list[str],
     timeout: float,
-    cancellation_manager: Optional[WorkerCancellationManager],
-    want_output: bool = False) -> Optional[bytes]:
+    cancellation_manager: WorkerCancellationManager
+    | None,
+    want_output: bool = False,
+    **kwargs,
+) -> bytes | str | None:
   """Start a cancellable process.
 
   Args:
@@ -238,7 +240,9 @@ def start_cancellable_process(
   with subprocess.Popen(
       cmdline,
       env=command_env,
-      stdout=(subprocess.PIPE if want_output else None)) as p:
+      stdout=(subprocess.PIPE if want_output else None),
+      **kwargs,
+  ) as p:
     if cancellation_manager:
       cancellation_manager.register_process(p)
 
@@ -259,6 +263,7 @@ def start_cancellable_process(
       raise subprocess.CalledProcessError(retcode, cmdline)
     else:
       if want_output:
+        assert p.stdout is not None
         ret: bytes = p.stdout.read()
         p.stdout.close()
         return ret
@@ -284,18 +289,18 @@ class CompilationResult:
 
   2) The keys in reward stats are those in the keys field.
   """
-  sequence_examples: dataclasses.InitVar[List[tf.train.SequenceExample]]
-  serialized_sequence_examples: List[str] = dataclasses.field(init=False)
+  sequence_examples: dataclasses.InitVar[list[tf.train.SequenceExample]]
+  serialized_sequence_examples: list[str] = dataclasses.field(init=False)
   length: int = dataclasses.field(init=False)
-  reward_stats: Dict[str, RewardStat]
-  rewards: List[float]
-  policy_rewards: List[float]
-  keys: List[str]
+  reward_stats: dict[str, RewardStat]
+  rewards: list[float]
+  policy_rewards: list[float]
+  keys: list[str]
 
   # The id of the model used to generate this compilation result
-  model_id: Optional[int]
+  model_id: int | None
 
-  def __post_init__(self, sequence_examples: List[tf.train.SequenceExample]):
+  def __post_init__(self, sequence_examples: list[tf.train.SequenceExample]):
     object.__setattr__(self, 'serialized_sequence_examples',
                        [x.SerializeToString() for x in sequence_examples])
     lengths = [
@@ -317,9 +322,9 @@ class CompilationRunnerStub(metaclass=abc.ABCMeta):
   def collect_data(
       self,
       loaded_module_spec: corpus.LoadedModuleSpec,
-      policy: Optional[policy_saver.Policy] = None,
-      reward_stat: Optional[Dict[str, RewardStat]] = None,
-      model_id: Optional[int] = None) -> WorkerFuture[CompilationResult]:
+      policy: policy_saver.Policy | None = None,
+      reward_stat: dict[str, RewardStat] | None = None,
+      model_id: int | None = None) -> WorkerFuture[CompilationResult]:
     raise NotImplementedError()
 
   @abc.abstractmethod
@@ -361,12 +366,13 @@ class CompilationRunner(Worker):
         'cancel_all_work', 'enable', 'pause_all_work', 'resume_all_work'
     }
 
-  def __init__(self,
-               clang_path: Optional[str] = None,
-               launcher_path: Optional[str] = None,
-               moving_average_decay_rate: float = 1,
-               create_observer_fns: Optional[List[Callable[
-                   [], CompilationResultObserver]]] = None):
+  def __init__(
+      self,
+      clang_path: str | None = None,
+      launcher_path: str | None = None,
+      moving_average_decay_rate: float = 1,
+      create_observer_fns: list[Callable[[], CompilationResultObserver]]
+      | None = None):
     """Initialization of CompilationRunner class.
 
     Args:
@@ -404,9 +410,9 @@ class CompilationRunner(Worker):
 
   def collect_data(self,
                    loaded_module_spec: corpus.LoadedModuleSpec,
-                   policy: Optional[policy_saver.Policy] = None,
-                   reward_stat: Optional[Dict[str, RewardStat]] = None,
-                   model_id: Optional[int] = None) -> CompilationResult:
+                   policy: policy_saver.Policy | None = None,
+                   reward_stat: dict[str, RewardStat] | None = None,
+                   model_id: int | None = None) -> CompilationResult:
     """Collect data for the given IR file and policy.
 
     Args:
@@ -459,21 +465,20 @@ class CompilationRunner(Worker):
       sequence_example = v[0]
       policy_reward = v[1]
       if k not in reward_stat:
-        raise ValueError(
-            (f'Example {k} does not exist under default policy for '
-             f'cmd line: {final_cmd_line}'))
+        raise ValueError(f'Example {k} does not exist under default policy for '
+                         f'cmd line: {final_cmd_line}')
       default_reward = reward_stat[k].default_reward
       moving_average_reward = reward_stat[k].moving_average_reward
       sequence_example = _overwrite_trajectory_reward(
           sequence_example=sequence_example,
-          reward=_calculate_reward(
+          reward=calculate_reward(
               policy=policy_reward, baseline=moving_average_reward))
       sequence_example_list.append(sequence_example)
       reward_stat[k].moving_average_reward = (
           moving_average_reward * self._moving_average_decay_rate +
           policy_reward * (1 - self._moving_average_decay_rate))
       rewards.append(
-          _calculate_reward(policy=policy_reward, baseline=default_reward))
+          calculate_reward(policy=policy_reward, baseline=default_reward))
       policy_rewards.append(policy_reward)
       keys.append(k)
 
@@ -493,7 +498,7 @@ class CompilationRunner(Worker):
   def compile_fn(
       self, command_line: corpus.FullyQualifiedCmdLine, tf_policy_path: str,
       reward_only: bool,
-      workdir: str) -> Dict[str, Tuple[tf.train.SequenceExample, float]]:
+      workdir: str) -> dict[str, tuple[tf.train.SequenceExample, float]]:
     """Compiles for the given IR file under the given policy.
 
     Args:

@@ -18,10 +18,17 @@ make install
 
 Baseline cmake configuration for the llvm installation:
 
+<<<<<<< HEAD
 ``` 
 cmake $LLVM_PROJECT_ROOT/llvm -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_ENABLE_RUNTIMES="compiler-rt" -DCOMPILER_RT_BUILD_INPUTGEN="ON" -DCMAKE_BUILD_TYPE=Release
 ```
 These options are required: `-DLLVM_ENABLE_RUNTIMES="compiler-rt" -DCOMPILER_RT_BUILD_INPUTGEN="ON"`
+=======
+*   Recent Ubuntu distro, e.g. 22.04
+*   python 3.10.x/3.11.x
+*   for local training, which is currently the only supported mode, we recommend
+    a high-performance workstation (e.g. 96 hardware threads).
+>>>>>>> 4b3511540acfc111ffbc23c254d90786eb29c86d
 
 See the following for more details on building LLVM:  https://llvm.org/docs/CMake.html
 
@@ -43,9 +50,29 @@ your default C++ std lib may be too old)
 -mclang='--gcc-toolchain=/path/to/gcc-toolchain' 
 ```
 
+<<<<<<< HEAD
 Multiple flags can also be specified as such:
 ``` shell
 -mclang='--flag1' -mclang='--flag2' 
+=======
+The actual dependencies:
+```shell
+./versioned_pipenv sync --system --categories "packages dev-packages ci"
+```
+Note that the above command will only work from the root of the repository
+since it needs to have `Pipfile.lock` in the working directory at the time
+of execution.
+
+The above command will also install all the packages, including development
+packages (the `dev-packages` category), and packages only needed in CI (the
+`ci` category). If you do not need those, you can omit them from the categories
+option.
+
+Optionally, to run tests (run_tests.sh), you also need:
+
+```shell
+sudo apt-get install virtualenv
+>>>>>>> 4b3511540acfc111ffbc23c254d90786eb29c86d
 ```
 
 ### Generating inputs for a module

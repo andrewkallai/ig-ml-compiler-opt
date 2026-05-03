@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +13,9 @@
 # limitations under the License.
 """Util functions to create and edit a tf_agent policy."""
 
-from typing import Protocol, Sequence, Type
+from typing import Protocol
+from collections.abc import Sequence
+import os
 
 import gin
 import numpy as np
@@ -36,7 +37,7 @@ class HasModelVariables(Protocol):
 # TODO(abenalaast): Issue #280
 @gin.configurable(module='policy_utils')
 def create_actor_policy(
-    actor_network_ctor: Type[network.DistributionNetwork],
+    actor_network_ctor: type[network.DistributionNetwork],
     greedy: bool = False,
 ) -> tf_policy.TFPolicy:
   """Creates an actor policy."""
@@ -120,5 +121,34 @@ def save_policy(policy: 'tf_policy.TFPolicy | HasModelVariables',
     policy_name: The value to name the policy.
   """
   set_vectorized_parameters_for_policy(policy, parameters)
-  saver = policy_saver.PolicySaver({policy_name: policy})
+  saver = policy_saver.MLGOPolicySaver({policy_name: policy})
   saver.save(save_folder)
+
+
+def convert_to_tflite(policy_as_bytes: bytes, scratch_dir: str,
+                      base_policy_path: str) -> str:
+  """Converts a policy serialized to bytes to TFLite.
+
+  Args:
+    policy_as_bytes: An array of model parameters serialized to a byte stream.
+    scratch_dir: A temporary directory being used for scratch that the model
+      will get saved into.
+    base_policy_path: The path to the base TF saved model that is used to
+      determine the model architecture.
+  """
+  perturbation = np.frombuffer(policy_as_bytes, dtype=np.float32)
+
+  saved_model = tf.saved_model.load(base_policy_path)
+  set_vectorized_parameters_for_policy(saved_model, perturbation)
+
+  saved_model_dir = os.path.join(scratch_dir, 'saved_model')
+  tf.saved_model.save(
+      saved_model, saved_model_dir, signatures=saved_model.signatures)
+  source = os.path.join(base_policy_path, policy_saver.OUTPUT_SIGNATURE)
+  destination = os.path.join(saved_model_dir, policy_saver.OUTPUT_SIGNATURE)
+  tf.io.gfile.copy(source, destination)
+
+  # convert to tflite
+  tflite_dir = os.path.join(scratch_dir, 'tflite')
+  policy_saver.convert_mlgo_model(saved_model_dir, tflite_dir)
+  return tflite_dir

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,10 +21,8 @@ from compiler_opt import type_map
 
 import tensorflow as tf
 from tf_agents.policies import tf_policy
-from tf_agents.policies import policy_saver
+from tf_agents.policies import policy_saver as tf_policy_saver
 from tf_agents.typing import types as tf_agents_types
-
-from typing import Dict, Tuple
 
 OUTPUT_SIGNATURE = 'output_spec.json'
 TFLITE_MODEL_NAME = 'model.tflite'
@@ -35,7 +32,7 @@ _dtype_to_name_map = {
 }
 
 
-def _split_tensor_name(name: str) -> Tuple[str, int]:
+def _split_tensor_name(name: str) -> tuple[str, int]:
   """Return tuple (op, port) with the op and int port for the tensor name."""
   op_port = name.split(':', 2)
   if len(op_port) == 1:
@@ -145,24 +142,24 @@ class Policy:
     return Policy(output_spec=output_spec, policy=policy)
 
 
-class PolicySaver(object):
+class MLGOPolicySaver:
   """Object that saves policy and model config file required by inference.
 
   ```python
-  policy_saver = PolicySaver(policy_dict, config)
+  policy_saver = MLGOPolicySaver(policy_dict, config)
   policy_saver.save(root_dir)
   ```
   """
 
-  def __init__(self, policy_dict: Dict[str, tf_policy.TFPolicy]):
+  def __init__(self, policy_dict: dict[str, tf_policy.TFPolicy]):
     """Initialize the PolicySaver object.
 
     Args:
       policy_dict: A dict mapping from policy name to policy.
     """
-    self._policy_saver_dict: Dict[str, Tuple[
-        policy_saver.PolicySaver, tf_policy.TFPolicy]] = {
-            policy_name: (policy_saver.PolicySaver(
+    self._policy_saver_dict: dict[str, tuple[
+        tf_policy_saver.PolicySaver, tf_policy.TFPolicy]] = {
+            policy_name: (tf_policy_saver.PolicySaver(
                 policy, batch_size=1, use_nest_path_signatures=False), policy
                          ) for policy_name, policy in policy_dict.items()
         }
@@ -190,8 +187,8 @@ class PolicySaver(object):
     # First entry in output list is the decision (action)
     decision_spec = tf.nest.flatten(action_signature.action)
     if len(decision_spec) != 1:
-      raise ValueError(('Expected action decision to have 1 tensor, but '
-                        f'saw: {action_signature.action}'))
+      raise ValueError('Expected action decision to have 1 tensor, but '
+                       f'saw: {action_signature.action}')
 
     # Find the decision's tensor in the flattened output tensor list.
     sm_action_decision = (

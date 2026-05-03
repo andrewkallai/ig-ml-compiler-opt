@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +17,6 @@ import functools
 from absl import app
 import gin
 import json
-from typing import List
 from unittest import mock
 import os
 
@@ -35,13 +33,10 @@ from compiler_opt.rl.imitation_learning import generate_bc_trajectories_lib
 from compiler_opt.rl import env
 from compiler_opt.rl import env_test
 
-# flags.FLAGS['gin_files'].allow_override = True
-# flags.FLAGS['gin_bindings'].allow_override = True
-
 _eps = 1e-5
 
 
-def _get_state_list() -> List[time_step.TimeStep]:
+def _get_state_list() -> list[time_step.TimeStep]:
 
   state_0 = time_step.TimeStep(
       discount=tf.constant(np.array([0.]), dtype=tf.float32),
@@ -96,8 +91,8 @@ class ExplorationWithPolicyTest(tf.test.TestCase):
   def _explore_policy(self,
                       state: time_step.TimeStep) -> policy_step.PolicyStep:
     probs = [
-        0.5 * float(state.observation['feature_3'].numpy()),
-        1 - 0.5 * float(state.observation['feature_3'].numpy())
+        0.5 * float(state.observation['feature_3'].numpy().item()),
+        1 - 0.5 * float(state.observation['feature_3'].numpy().item())
     ]
     logits = [[0.0, tf.math.log(probs[1] / (1.0 - probs[1] + _eps))]]
     return policy_step.PolicyStep(
@@ -455,9 +450,9 @@ class ModuleExplorerTest(tf.test.TestCase):
       # will explore every 4-th step
       logits = [[
           4.0 + 1e-3 * float(env_test._NUM_STEPS - times_called),
-          -np.Inf,
-          -np.Inf,
-          -np.Inf,
+          -np.inf,
+          -np.inf,
+          -np.inf,
           float(np.mod(times_called, 5)),
       ]]
       return policy_step.PolicyStep(
@@ -634,7 +629,7 @@ class ModuleWorkerResultProcessorTest(tf.test.TestCase):
     self.assertEqual(seq_example, succeeded_comp[0][0][2])
 
 
-@gin.configurable
+@gin.configurable(module='generate_bc_trajectories_test')
 class MockModuleWorker(generate_bc_trajectories_lib.ModuleWorker):
 
   @mock.patch('subprocess.Popen')
@@ -719,4 +714,4 @@ class GenTrajectoriesTest(tf.test.TestCase):
 
 
 if __name__ == '__main__':
-  multiprocessing.handle_main(functools.partial(app.run, tf.test.main))
+  multiprocessing.handle_test_main(functools.partial(app.run, tf.test.main))
