@@ -18,7 +18,24 @@ import json
 import os
 import time
 
-from absl import logging
+# Enable XLA CPU JIT auto-clustering before any TensorFlow ops are created.
+os.environ.setdefault('TF_XLA_FLAGS', '')
+for _flag in ['--tf_xla_cpu_global_jit']:
+  if _flag not in os.environ['TF_XLA_FLAGS']:
+    os.environ['TF_XLA_FLAGS'] += f' {_flag}'
+os.environ['TF_XLA_FLAGS'] = os.environ['TF_XLA_FLAGS'].lstrip()
+# Increase XLA compilation cache to avoid recompilation on every step.
+os.environ.setdefault('XLA_FLAGS', '')
+for _flag in ['--xla_reduce_compilation_jitter=1',
+              '--xla_dump_hlo_module_reuse=1',
+              '--xla_dump_max_hlo_modules=1024']:
+  if _flag not in os.environ['XLA_FLAGS']:
+    os.environ['XLA_FLAGS'] += f' {_flag}'
+os.environ['XLA_FLAGS'] = os.environ['XLA_FLAGS'].lstrip()
+
+# Imports below are intentionally after env var setup; must be before TF import.
+# ruff: noqa: E402
+from absl import logging  # noqa: E402
 import gin
 import tensorflow as tf
 from tf_agents.agents import tf_agent
@@ -60,6 +77,7 @@ def train_eval(root_dir: str,
                dump_best_trajectory=False,
                moving_average_decay_rate=1):
   """Training coordinator."""
+  tf.config.optimizer.set_jit('autoclustering')
   problem_config = registry.get_configuration()
   time_step_spec, action_spec = problem_config.get_signature_spec()
   preprocessing_layer_creator = problem_config.get_preprocessing_layer_creator()
@@ -152,7 +170,7 @@ def train_eval(root_dir: str,
     )
     def _shutdown(signum, frame):
       tf.profiler.experimental.stop()  # writes plugins/profile/... output
-      quit()
+      os._exit(0)
 
     # pr = cProfile.Profile()
     # pr.enable()

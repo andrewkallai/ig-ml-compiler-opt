@@ -30,6 +30,10 @@ config.external_configurable(tf.keras.layers.Add, 'tf.keras.layers.Add')
 config.external_configurable(tf.keras.layers.Concatenate,
                              'tf.keras.layers.Concatenate')
 
+# Optimizers
+config.external_configurable(tf.keras.optimizers.Adam,
+                             'tf.keras.optimizers.Adam')
+
 # Loss functions
 config.external_configurable(tf.keras.losses.MeanSquaredError,
                              'tf.keras.losses.MeanSquaredError')

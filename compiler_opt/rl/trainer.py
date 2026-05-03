@@ -221,6 +221,7 @@ class Trainer:
         self._global_step % self._summary_export_interval, 0)):
       for iteration_index in range(num_iterations):
         with tf.profiler.experimental.Trace('train', step_num=self._global_step+iteration_index, _r=1):
+          _t_load = time.perf_counter()
           try:
             experience = next(dataset_iter)
           except StopIteration:
@@ -228,15 +229,25 @@ class Trainer:
                 'Warning: skip training because do not have enough data to fill '
                 'in a batch, consider increase data or reduce batch size.')
             break
+          _t_load_elapsed = time.perf_counter() - _t_load
 
+          _t_rnd = time.perf_counter()
           if self._random_network_distillation:
             experience = self._random_network_distillation.train(experience)
+          _t_rnd_elapsed = time.perf_counter() - _t_rnd
 
+          _t_train = time.perf_counter()
           loss = self._agent.train(experience)
+          _t_train_elapsed = time.perf_counter() - _t_train
 
         self._percentage_correct.reset_state()
         self._update_metrics(experience, monitor_dict)
         self._log_experiment(loss.loss)
+
+        if tf.math.equal(self._global_step % self._log_interval, 0):
+          logging.info('  breakdown: load=%.3fs, rnd=%.3fs, train=%.3fs',
+                       _t_load_elapsed, _t_rnd_elapsed, _t_train_elapsed)
+
         self._save_checkpoint()
 
         if hooks is not None:
