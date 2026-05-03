@@ -208,14 +208,11 @@ class WorkerCancellationManager:
       raise RuntimeError('Cancellation manager deleted while containing items.')
 
 
-def start_cancellable_process(
-    cmdline: list[str],
-    timeout: float,
-    cancellation_manager: WorkerCancellationManager
-    | None,
-    want_output: bool = False,
-    **kwargs,
-) -> bytes | str | None:
+def start_cancellable_process(cmdline: list[str],
+                              timeout: float,
+                              cancellation_manager: WorkerCancellationManager
+                              | None,
+                              want_output: bool = False) -> bytes | None:
   """Start a cancellable process.
 
   Args:
@@ -240,9 +237,7 @@ def start_cancellable_process(
   with subprocess.Popen(
       cmdline,
       env=command_env,
-      stdout=(subprocess.PIPE if want_output else None),
-      **kwargs,
-  ) as p:
+      stdout=(subprocess.PIPE if want_output else None)) as p:
     if cancellation_manager:
       cancellation_manager.register_process(p)
 

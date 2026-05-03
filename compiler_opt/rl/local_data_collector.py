@@ -13,7 +13,6 @@
 # limitations under the License.
 """Module for collecting data locally."""
 
-import concurrent.futures
 import itertools
 import time
 from collections.abc import Callable, Iterator
@@ -56,54 +55,16 @@ class LocalDataCollector(data_collector.DataCollector):
     self._reward_stat_map = reward_stat_map
     self._best_trajectory_repo = best_trajectory_repo
     self._exit_checker_ctor = exit_checker_ctor
-    # _reset_workers is a future that resolves when post-data collection cleanup
-    # work completes, i.e. cancelling all work and re-enabling the workers.
-    # We remove this activity from the critical path by running it concurrently
-    # with the training phase - i.e. whatever happens between successive data
-    # collection calls. Subsequent runs will wait for these to finish.
-    self._reset_workers: concurrent.futures.Future | None = None
     self._current_futures: list[worker.WorkerFuture] = []
-    self._pool = concurrent.futures.ThreadPoolExecutor()
-    self._prefetch_pool = concurrent.futures.ThreadPoolExecutor()
-    self._next_sample: list[
-        concurrent.futures.Future] = self._prefetch_next_sample()
-
-  def _prefetch_next_sample(self):
-    t1 = time.time()
-    sample = self._corpus.sample(k=self._num_modules, sort=False)
-    ret = [
-        self._prefetch_pool.submit(self._corpus.load_module_spec, element)
-        for element in sample
-    ]
-    logging.info('prefetching took %d', time.time() - t1)
-    return ret
 
   def close_pool(self):
-    self._join_pending_jobs()
-    # if the pool lost some workers, that's fine - we don't need to tell them
-    # anything anymore. To the new ones, the call is redundant (fine).
     for p in self._workers:
       p.cancel_all_work()
     self._workers = None
     self._worker_pool = None
 
-  def _join_pending_jobs(self):
-    t1 = time.time()
-    if self._reset_workers:
-      concurrent.futures.wait([self._reset_workers])
-
-    self._reset_workers = None
-    # this should have taken negligible time, normally, since all the work
-    # has been cancelled and the workers had time to process the cancellation
-    # while training was unfolding.
-    logging.info('Waiting for pending work from last iteration took %f',
-                 time.time() - t1)
-
   def _schedule_jobs(self, policy: policy_saver.Policy, model_id: int,
                      sampled_modules: list[corpus.LoadedModuleSpec]) -> None:
-    # by now, all the pending work, which was signaled to cancel, must've
-    # finished
-    self._join_pending_jobs()
     jobs = [{
         'loaded_module_spec': loaded_module_spec,
         'policy': policy,
@@ -132,13 +93,10 @@ class LocalDataCollector(data_collector.DataCollector):
       They will be reported using `tf.scalar.summary` by the trainer so these
       information is viewable in TensorBoard.
     """
-    time1 = time.time()
-    sampled_modules: list[corpus.LoadedModuleSpec] = [
-        s.result() for s in self._next_sample
+    sample = self._corpus.sample(k=self._num_modules, sort=False)
+    sampled_modules = [
+        self._corpus.load_module_spec(element) for element in sample
     ]
-    logging.info('resolving prefetched sample took: %d seconds',
-                 time.time() - time1)
-    self._next_sample = self._prefetch_next_sample()
     self._schedule_jobs(policy, model_id, sampled_modules)
 
     def wait_for_termination():
@@ -153,6 +111,7 @@ class LocalDataCollector(data_collector.DataCollector):
     wait_seconds = wait_for_termination()
     current_work = list(zip(sampled_modules, self._current_futures))
     finished_work = [(spec, res) for spec, res in current_work if res.done()]
+    #successful_work = [(spec, res)
     successful_work = [(spec, res.result())
                        for spec, res in finished_work
                        if not worker.get_exception(res)]
@@ -162,16 +121,13 @@ class LocalDataCollector(data_collector.DataCollector):
                  len(finished_work), self._num_modules, wait_seconds, failures)
 
     # signal whatever work is left to finish, and re-enable workers.
-    def wrapup():
-      cancel_futures = [wkr.cancel_all_work() for wkr in self._workers]
-      worker.wait_for(cancel_futures)
-      # now that the workers killed pending compilations, make sure the workers
-      # drained their working queues first - they should all complete quickly
-      # since the cancellation manager is killing immediately any process starts
-      concurrent.futures.wait(self._current_futures)
-      worker.wait_for([wkr.enable() for wkr in self._workers])
-
-    self._reset_workers = self._pool.submit(wrapup)
+    cancel_futures = [wkr.cancel_all_work() for wkr in self._workers]
+    worker.wait_for(cancel_futures)
+    # now that the workers killed pending compilations, make sure the workers
+    # drained their working queues first - they should all complete quickly
+    # since the cancellation manager is killing immediately any process starts
+    worker.wait_for(self._current_futures)
+    worker.wait_for([wkr.enable() for wkr in self._workers])
 
     sequence_examples = list(
         itertools.chain.from_iterable(

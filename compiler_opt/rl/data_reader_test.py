@@ -114,7 +114,7 @@ class DataReaderTest(tf.test.TestCase, parameterized.TestCase):
             action_spec=self._discrete_action_spec),
         batch_size=2,
         train_sequence_length=3)
-    data_iterator = iter(dataset_fn(data_source).repeat())
+    data_iterator = iter(dataset_fn(data_source))
 
     experience = next(data_iterator)
     self.assertIsInstance(experience, trajectory.Trajectory)
@@ -173,7 +173,7 @@ class DataReaderTest(tf.test.TestCase, parameterized.TestCase):
             action_spec=self._discrete_action_spec),
         batch_size=2,
         train_sequence_length=3)
-    data_iterator = iter(dataset_fn(data_source).repeat())
+    data_iterator = iter(dataset_fn(data_source))
 
     experience = next(data_iterator)
     self.assertAllEqual(['feature_key'], list(experience.observation.keys()))
@@ -195,7 +195,7 @@ class DataReaderTest(tf.test.TestCase, parameterized.TestCase):
             action_spec=self._continuous_action_spec),
         batch_size=2,
         train_sequence_length=3)
-    data_iterator = iter(dataset_fn(data_source).repeat())
+    data_iterator = iter(dataset_fn(data_source))
 
     experience = next(data_iterator)
     self.assertAllEqual(['feature_key'], list(experience.observation.keys()))

@@ -36,6 +36,10 @@ from compiler_opt.rl import policy_saver
 from compiler_opt.rl import random_net_distillation
 from compiler_opt.rl import registry
 from compiler_opt.rl import trainer
+from collections.abc import Callable, Iterable
+import signal
+from pdb import set_trace
+import cProfile
 
 
 @gin.configurable
@@ -49,7 +53,7 @@ def train_eval(root_dir: str,
                num_policy_iterations=0,
                num_modules=100,
                num_iterations=100,
-               batch_size=64,
+               batch_size=8,#64,
                train_sequence_length=1,
                deploy_policy_name='saved_policy',
                use_random_network_distillation=False,
@@ -99,7 +103,7 @@ def train_eval(root_dir: str,
       train_sequence_length=train_sequence_length)
 
   def sequence_example_iterator_fn(seq_ex: list[str]):
-    return iter(dataset_fn(seq_ex).repeat().prefetch(tf.data.AUTOTUNE))
+    return iter(dataset_fn(seq_ex))
 
   reward_stat_map = collections.defaultdict(lambda: None)
   reward_stat_map_path = os.path.join(root_dir, 'reward_stat_map')
@@ -141,6 +145,27 @@ def train_eval(root_dir: str,
         best_trajectory_repo=best_trajectory_repo)
 
     # Repeat for num_policy_iterations iterations.
+    opts = tf.profiler.experimental.ProfilerOptions(
+        host_tracer_level=2,
+        python_tracer_level=0,  # set to 1/2 only if you really need python stacks
+        device_tracer_level=0,
+    )
+    def _shutdown(signum, frame):
+      tf.profiler.experimental.stop()  # writes plugins/profile/... output
+      quit()
+
+    # pr = cProfile.Profile()
+    # pr.enable()
+
+    # def _shutdown(signum, frame):
+    #   pr.disable()
+    #   pr.print_stats(sort='time')
+    #   quit()
+
+    signal.signal(signal.SIGTERM, _shutdown)  # cancellation / time-limit
+    signal.signal(signal.SIGINT,  _shutdown)
+    tf.profiler.experimental.start(root_dir, options=opts)
+
     t1 = time.time()
     while (llvm_trainer.global_step_numpy()
            < num_policy_iterations * num_iterations):
@@ -169,6 +194,9 @@ def train_eval(root_dir: str,
 
       data_collector.on_dataset_consumed(dataset_iter)
 
+    tf.profiler.experimental.stop()
+    # pr.disable()
+    # pr.print_stats(sort='time')
     # Save final policy.
     saver.save(root_dir)
     # Wait for all the workers to finish.

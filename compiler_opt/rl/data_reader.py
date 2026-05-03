@@ -13,7 +13,7 @@
 # limitations under the License.
 """util function to create training datasets."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import tensorflow as tf
 from tf_agents.trajectories import trajectory
@@ -85,76 +85,74 @@ def create_parser_fn(
   return _parser_fn
 
 
-def create_flat_sequence_example_dataset_fn(
-    agent_cfg: agent_config.AgentConfig
-) -> Callable[[list[str]], tf.data.Dataset]:
-  """Get a function that creates a dataset from serialized sequence examples.
-
-  The dataset is "flat" insofar as it does not batch for sequence length nor
-  batches.
-
-  Args:
-    agent_name: AgentName, enum type of the agent.
-    time_step_spec: time step spec of the optimization problem.
-    action_spec: action spec of the optimization problem.
-
-  Returns:
-    A callable that takes a list of serialized sequence examples and returns
-      a `tf.data.Dataset`.  Treating this dataset as an iterator yields batched
-      `trajectory.Trajectory` instances with shape `[...]`.
-  """
-  parser_fn = create_parser_fn(agent_cfg)
-
-  def _sequence_example_dataset_fn(sequence_examples):
-    # Data collector returns empty strings for corner cases, filter them out
-    # here.
-    # yapf: disable - Looks better hand formatted
-    dataset = (tf.data.Dataset
-                .from_tensor_slices(sequence_examples)
-                .filter(lambda string: tf.strings.length(string) > 0)
-                .map(parser_fn)
-                .filter(lambda traj: tf.size(traj.reward) > 2)
-                .unbatch()
-               )
-    # yapf: enable
-    return dataset
-
-  return _sequence_example_dataset_fn
-
-
 def create_sequence_example_dataset_fn(
     agent_cfg: agent_config.AgentConfig, batch_size: int,
-    train_sequence_length: int) -> Callable[[list[str]], tf.data.Dataset]:
-  """Get a function that creates a dataset from serialized sequence examples.
+    train_sequence_length: int) -> Callable[[list[str]], Iterator[trajectory.Trajectory]]:
+  """Get a generator that yields batches of parsed trajectories.
+
+  Avoids tf.data.Dataset overhead (Iterator::Root::Prefetch, etc.) by parsing
+  eagerly and yielding batches from a Python generator.
 
   Args:
-    agent_name: AgentName, enum type of the agent.
-    time_step_spec: time step spec of the optimization problem.
-    action_spec: action spec of the optimization problem.
-    batch_size: int, batch_size B.
+    agent_cfg: agent config with specs.
+    batch_size: int, batch size B.
     train_sequence_length: int, trajectory sequence length T.
 
   Returns:
     A callable that takes a list of serialized sequence examples and returns
-      a `tf.data.Dataset`.  Treating this dataset as an iterator yields batched
-      `trajectory.Trajectory` instances with shape `[B, T, ...]`.
+      an infinite iterator yielding batched `Trajectory` with shape [B, T, ...].
   """
-  trajectory_shuffle_buffer_size = 1024
+  parser_fn = create_parser_fn(agent_cfg)
 
-  flat_sequence_example_dataset_fn = create_flat_sequence_example_dataset_fn(
-      agent_cfg)
+  def _batched_generator(sequence_examples: list[str]):
+    trajectories = []
+    for serialized in sequence_examples:
+      if not serialized:
+        continue
+      traj = parser_fn(tf.constant(serialized))
+      if tf.size(traj.reward) > 2:
+        trajectories.append(traj)
 
-  def _sequence_example_dataset_fn(sequence_examples):
-    # Data collector returns empty strings for corner cases, filter them out
-    # here.
-    # yapf: disable - Looks better hand formatted
-    dataset = flat_sequence_example_dataset_fn(sequence_examples)
-    return (dataset.batch(train_sequence_length, drop_remainder=True)
-                   .cache()
-                   .shuffle(trajectory_shuffle_buffer_size)
-                   .batch(batch_size, drop_remainder=True))
+    if not trajectories:
+      return
 
-  return _sequence_example_dataset_fn
+    num_frames_per_batch = train_sequence_length * batch_size
+
+    def slice_traj(traj, start, length):
+      return tf.nest.map_structure(
+          lambda t: t[start:start + length], traj)
+
+    def concat_frames(trajs):
+      return tf.nest.map_structure(
+          lambda *ts: tf.concat(list(ts), axis=0), *trajs)
+
+    all_frames = concat_frames(trajectories)
+
+    num_frames = tf.shape(
+        tf.nest.flatten(all_frames)[0])[0].numpy()
+
+    all_batches = []
+    for b in range(num_frames // num_frames_per_batch):
+      start = b * num_frames_per_batch
+      batch_chunks = []
+      for t in range(batch_size):
+        chunk_start = start + t * train_sequence_length
+        chunk = slice_traj(all_frames, chunk_start, train_sequence_length)
+        batch_chunks.append(chunk)
+
+      batched = tf.nest.map_structure(
+          lambda *ts: tf.stack(ts), *batch_chunks)
+      all_batches.append(batched)
+
+    idx = 0
+    while True:
+      if idx < len(all_batches):
+        yield all_batches[idx]
+        idx += 1
+      else:
+        idx = 0
+
+  return _batched_generator
 
 
 # TODO(yundi): PyType check of input_dataset as Type[tf.data.Dataset] is not
@@ -182,11 +180,14 @@ def create_file_dataset_fn(
       Iterating over this dataset yields `trajectory.Trajectory` instances with
       shape `[B, T, ...]`.
   """
-  files_buffer_size = 100
+  #files_buffer_size = 100
+  files_buffer_size = 2
   num_readers = 10
   num_map_threads = 8
-  shuffle_buffer_size = 1024
-  trajectory_shuffle_buffer_size = 1024
+  #shuffle_buffer_size = 1024
+  shuffle_buffer_size = 2
+  #trajectory_shuffle_buffer_size = 1024
+  trajectory_shuffle_buffer_size = 2
 
   parser_fn = create_parser_fn(agent_cfg)
 
@@ -209,9 +210,11 @@ def create_file_dataset_fn(
     dataset = (
         dataset.unbatch().batch(
             train_sequence_length,
-            drop_remainder=True).shuffle(trajectory_shuffle_buffer_size).batch(
-                batch_size,
-                drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
+            drop_remainder=True))
+            # drop_remainder=True).shuffle(trajectory_shuffle_buffer_size).batch(
+            #     batch_size,
+            #     drop_remainder=True))
+                #drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE))
     return dataset
 
   return _file_dataset_fn

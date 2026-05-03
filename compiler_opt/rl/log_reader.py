@@ -137,14 +137,8 @@ class LogReaderTensorValue:
 
 @dataclasses.dataclass(frozen=True)
 class _Header:
-<<<<<<< HEAD
-  features: List[tf.TensorSpec]
-  score: Optional[tf.TensorSpec]
-  advice: Optional[tf.TensorSpec] = None
-=======
   features: list[tf.TensorSpec]
   score: tf.TensorSpec | None
->>>>>>> 4b3511540acfc111ffbc23c254d90786eb29c86d
 
 
 def _read_tensor(fs: BinaryIO, ts: tf.TensorSpec) -> LogReaderTensorValue:
@@ -165,8 +159,7 @@ def _read_header(f: BinaryIO) -> _Header | None:
   header = json.loads(header_raw)
   tensor_specs = [create_tensorspec(ts) for ts in header['features']]
   score_spec = create_tensorspec(header['score']) if 'score' in header else None
-  advice_spec = create_tensorspec(header["advice"]) if "advice" in header else None
-  return _Header(features=tensor_specs, score=score_spec, advice=advice_spec)
+  return _Header(features=tensor_specs, score=score_spec)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -176,29 +169,6 @@ class ObservationRecord:
   feature_values: list[LogReaderTensorValue]
   score: LogReaderTensorValue | None
 
-def read_one_observation(
-    context: Optional[str],
-    event_str: str,
-    f: BinaryIO,
-    tensor_specs: List[tf.TensorSpec],
-    score_spec: Optional[tf.TensorSpec],
-):
-    event = json.loads(event_str)
-    if "context" in event:
-        context = event["context"]
-        event = json.loads(f.readline())
-    observation_id = int(event["observation"])
-    features = []
-    for ts in tensor_specs:
-        features.append(_read_tensor(f, ts))
-    f.readline()
-    score = None
-    if score_spec is not None:
-        score_header = json.loads(f.readline())
-        assert int(score_header["outcome"]) == observation_id
-        score = _read_tensor(f, score_spec)
-        f.readline()
-    return context, observation_id, features, score
 
 def _enumerate_log_from_stream(
     f: BinaryIO, header: _Header) -> Generator[ObservationRecord, None, None]:
