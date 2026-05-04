@@ -26,8 +26,7 @@ for _flag in ['--tf_xla_cpu_global_jit']:
 os.environ['TF_XLA_FLAGS'] = os.environ['TF_XLA_FLAGS'].lstrip()
 # Increase XLA compilation cache to avoid recompilation on every step.
 os.environ.setdefault('XLA_FLAGS', '')
-for _flag in ['--xla_reduce_compilation_jitter=1',
-              '--xla_dump_hlo_module_reuse=1',
+for _flag in ['--xla_cpu_multi_thread_eigen=true',
               '--xla_dump_max_hlo_modules=1024']:
   if _flag not in os.environ['XLA_FLAGS']:
     os.environ['XLA_FLAGS'] += f' {_flag}'
